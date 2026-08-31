@@ -20,7 +20,7 @@ ST_PERIOD = 20
 ST_MULTIPLIER = 2.0
 
 # SAFETY: False = no real orders; True = real Angel One orders.
-LIVE_TRADING = False
+LIVE_TRADING = True
 LOTS = 1
 ORDER_TYPE = "MARKET"
 PRODUCT_TYPE = "INTRADAY"
