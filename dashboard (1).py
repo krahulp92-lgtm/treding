@@ -43,7 +43,7 @@ ST_MULTIPLIER = 2.0
 # SAFETY
 # False = no real order
 # True  = REAL Angel One order
-LIVE_TRADING = False
+LIVE_TRADING = True
 
 LOTS = 1
 ORDER_TYPE = "MARKET"
@@ -2478,7 +2478,10 @@ def live_engine():
 # ============================================================
 
 live_engine()
-
+BUY CE:
+5m RED → GREEN
+15m GREEN
+4h GREEN
 
 # ============================================================
 # SAFETY NOTE
