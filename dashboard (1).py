@@ -1,4 +1,4 @@
-```python
+
 # ============================================================
 # dashboard.py
 # NIFTY LIVE SUPERTREND 20,2 - ANGEL ONE
@@ -2490,4 +2490,4 @@ st.caption(
     "Bearish 5m flip + 15m RED + 4h RED = BUY ATM PE | "
     "LIVE_TRADING=False: real orders disabled."
 )
-```
+
