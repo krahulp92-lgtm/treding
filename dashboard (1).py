@@ -2478,40 +2478,6 @@ def live_engine():
 # ============================================================
 
 live_engine()
-# BUY ATM CE when:
-# 5-minute Supertrend changes RED -> GREEN
-# AND 15-minute Supertrend is GREEN
-# AND 4-hour Supertrend is GREEN
-
-buy_ce = (
-    dprev == -1
-    and d5 == 1
-    and d15 == 1
-    and d4h == 1
-)
-
-# BUY ATM PE when:
-# 5-minute Supertrend changes GREEN -> RED
-# AND 15-minute Supertrend is RED
-# AND 4-hour Supertrend is RED
-
-buy_pe = (
-    dprev == 1
-    and d5 == -1
-    and d15 == -1
-    and d4h == -1
-)
-if buy_ce:
-    action = "BUY CE"
-    option_type = "CE"
-
-elif buy_pe:
-    action = "BUY PE"
-    option_type = "PE"
-
-else:
-    action = "WAIT"
-    option_type = None
 
 # ============================================================
 # SAFETY NOTE
