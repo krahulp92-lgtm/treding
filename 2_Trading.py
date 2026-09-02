@@ -26,7 +26,7 @@ if not st.session_state.running:
     st.warning("Trading is not running.")
 
     if st.button("⬅ Back to Dashboard"):
-        st.switch_page("dashboard.py")
+        st.switch_page("dashboard (1).py")
 
     st.stop()
 
