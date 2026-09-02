@@ -372,4 +372,4 @@ if st.button(
     st.session_state.last_signal = "WAIT"
     st.session_state.atm_strike = None
 
-  st.switch_page("dashboard (1).py")
+    st.switch_page("dashboard (1).py")
