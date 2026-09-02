@@ -372,10 +372,4 @@ if st.button(
     st.session_state.last_signal = "WAIT"
     st.session_state.atm_strike = None
 
-   pages = [
-    st.Page("dashboard (1).py", title="Dashboard", url_path="dashboard"),
-    
-]
-
-pg = st.navigation(pages)
-pg.run()
+  st.switch_page("dashboard (1).py")
