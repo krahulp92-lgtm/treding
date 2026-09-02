@@ -2492,10 +2492,4 @@ st.caption(
 
 if st.button("🚀 START TRADING", type="primary"):
     st.session_state.running = True
-    pages = [
-    st.Page("pages/2_Trading.py", title="Dashboard", url_path="Trading"),
-    
-]
-
-pg = st.navigation(pages)
-pg.run()
+   st.switch_page("pages/2_Trading.py")
