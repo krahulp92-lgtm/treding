@@ -2493,7 +2493,7 @@ st.caption(
 if st.button("🚀 START TRADING", type="primary"):
     st.session_state.running = True
     pages = [
-    st.Page("pages/2_Treding.py", title="Dashboard", url_path="dashboard"),
+    st.Page("pages/2_Trading.py", title="Dashboard", url_path="Trading"),
     
 ]
 
