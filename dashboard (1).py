@@ -2493,3 +2493,4 @@ st.caption(
 if st.button("🚀 START TRADING", type="primary"):
     st.session_state.running = True
     st.switch_page("pages/2_Trading.py")
+    st.rerun()
