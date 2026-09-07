@@ -206,29 +206,44 @@ def login_angel_one():
 @st.cache_data(ttl=3600)
 def download_instruments():
 
+    import requests
+
     url = (
-        "https://margincalculator.angelone.com/"
+        "https://margincalculator.angelone.in/"
         "OpenAPI_File/files/OpenAPIScripMaster.json"
     )
 
-    import requests
-
-    response = requests.get(
-        url,
-        timeout=30
-    )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    if not isinstance(data, list):
-        raise RuntimeError(
-            "Instrument master returned invalid data"
+    try:
+        response = requests.get(
+            url,
+            timeout=60
         )
 
-    return data
+        response.raise_for_status()
 
+        data = response.json()
+
+        if not isinstance(data, list):
+            raise RuntimeError(
+                "Angel One instrument master returned invalid data"
+            )
+
+        if len(data) == 0:
+            raise RuntimeError(
+                "Angel One instrument master is empty"
+            )
+
+        return data
+
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(
+            f"Instrument master download failed: {e}"
+        )
+
+    except ValueError as e:
+        raise RuntimeError(
+            f"Instrument master JSON error: {e}"
+        )
 
 # ============================================================
 # NIFTY SPOT
