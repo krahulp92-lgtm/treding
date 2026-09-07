@@ -2515,55 +2515,121 @@ if selected_option:
 # BUY ORDER SECTION
 # ============================================================
 
+# ============================================================
+# ORDER PANEL — ALWAYS SHOW BUY CE / BUY PE
+# ============================================================
+
 st.divider()
 
-st.subheader(
-    "🛒 Order Panel"
-)
+st.subheader("🛒 Order Panel")
 
-if selected_option:
+ce_option = None
+pe_option = None
 
-    buy_col, refresh_col = st.columns(
-        [3, 1]
+# ------------------------------------------------------------
+# FIND ATM CE
+# ------------------------------------------------------------
+
+try:
+    ce_option = select_atm_option(
+        st.session_state.instruments,
+        spot,
+        "CE"
     )
 
-    with buy_col:
+    ce_option["ltp"] = get_option_ltp(
+        ce_option
+    )
 
-        buy_text = (
-            f"BUY {selected_option['symbol']} "
-            f"× {selected_option['lot_size']}"
+except Exception as e:
+    st.warning(f"CE option unavailable: {e}")
+
+
+# ------------------------------------------------------------
+# FIND ATM PE
+# ------------------------------------------------------------
+
+try:
+    pe_option = select_atm_option(
+        st.session_state.instruments,
+        spot,
+        "PE"
+    )
+
+    pe_option["ltp"] = get_option_ltp(
+        pe_option
+    )
+
+except Exception as e:
+    st.warning(f"PE option unavailable: {e}")
+
+
+# ============================================================
+# DISPLAY BOTH OPTIONS
+# ============================================================
+
+if ce_option and pe_option:
+
+    c1, c2 = st.columns(2)
+
+    # ========================================================
+    # CE
+    # ========================================================
+
+    with c1:
+
+        st.markdown("### 🟢 NIFTY ATM CE")
+
+        st.write(
+            f"**Symbol:** {ce_option['symbol']}"
+        )
+
+        st.write(
+            f"**Strike:** {ce_option['strike']:,.0f}"
+        )
+
+        st.write(
+            f"**Expiry:** {ce_option['expiry']}"
+        )
+
+        st.write(
+            f"**Lot Size:** {ce_option['lot_size']}"
+        )
+
+        st.metric(
+            "CE LTP",
+            f"₹{ce_option['ltp']:,.2f}"
         )
 
         if st.button(
-            buy_text,
+            f"🛒 BUY CE — {ce_option['symbol']}",
             type="primary",
-            use_container_width=True
+            use_container_width=True,
+            key="buy_ce_button"
         ):
 
             try:
 
                 result = execute_signal_order(
-                    signal,
-                    selected_option
+                    "BUY_CE",
+                    ce_option
                 )
 
-                if result.get(
-                    "paper"
-                ):
+                if result.get("paper"):
 
                     st.warning(
-                        result["message"]
+                        "TEST MODE — No real order sent."
                     )
 
                     st.info(
-                        f"Paper order ID: "
+                        f"Paper Order ID: "
                         f"{result['order_id']}"
                     )
 
                 else:
 
                     st.success(
-                        "BUY order submitted successfully."
+                        "CE BUY ORDER SENT"
                     )
 
                     st.write(
@@ -2571,35 +2637,86 @@ if selected_option:
                         result["order_id"]
                     )
 
+            except Exception as e:
+
+                st.error(str(e))
+
+
+    # ========================================================
+    # PE
+    # ========================================================
+
+    with c2:
+
+        st.markdown("### 🔴 NIFTY ATM PE")
+
+        st.write(
+            f"**Symbol:** {pe_option['symbol']}"
+        )
+
+        st.write(
+            f"**Strike:** {pe_option['strike']:,.0f}"
+        )
+
+        st.write(
+            f"**Expiry:** {pe_option['expiry']}"
+        )
+
+        st.write(
+            f"**Lot Size:** {pe_option['lot_size']}"
+        )
+
+        st.metric(
+            "PE LTP",
+            f"₹{pe_option['ltp']:,.2f}"
+        )
+
+        if st.button(
+            f"🛒 BUY PE — {pe_option['symbol']}",
+            type="primary",
+            use_container_width=True,
+            key="buy_pe_button"
+        ):
+
+            try:
+
+                result = execute_signal_order(
+                    "BUY_PE",
+                    pe_option
+                )
+
+                if result.get("paper"):
+
                     st.warning(
-                        "Order ID means the order was "
-                        "accepted by the API; verify "
-                        "the actual execution status "
-                        "in the Order Book."
+                        "TEST MODE — No real order sent."
+                    )
+
+                    st.info(
+                        f"Paper Order ID: "
+                        f"{result['order_id']}"
+                    )
+
+                else:
+
+                    st.success(
+                        "PE BUY ORDER SENT"
+                    )
+
+                    st.write(
+                        "Order ID:",
+                        result["order_id"]
                     )
 
             except Exception as e:
 
-                st.error(
-                    str(e)
-                )
+                st.error(str(e))
 
-    with refresh_col:
-
-        if st.button(
-            "🔄 Refresh",
-            use_container_width=True
-        ):
-
-            st.rerun()
 
 else:
 
-    st.info(
-        "A BUY button appears only when a "
-        "confirmed BUY_CE or BUY_PE signal occurs."
+    st.error(
+        "Unable to load ATM CE/PE options."
     )
-
 
 # ============================================================
 # AUTOMATIC TRADING
