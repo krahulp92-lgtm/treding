@@ -178,8 +178,8 @@ def login_angel_one():
     api = SmartConnect(api_key=ANGEL_API_KEY)
 
     response = api.generateSession(
-        CLIENT_ID,
-        PASSWORD,
+        ANGEL_CLIENT_ID,
+        ANGEL_PASSWORD,
         totp
     )
 
