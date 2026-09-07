@@ -10,7 +10,7 @@
 # 4 Hour confirmation
 # ATM CE / PE selection
 # CE / PE LTP
-# ALWAYS visible BUY CE / BUY PE
+# AUTOMATED BUY CE / BUY PE
 # Local instrument-master cache
 # Duplicate BUY protection
 # Real Angel One order placement
@@ -60,16 +60,28 @@ IST = ZoneInfo("Asia/Kolkata")
 # SAFETY SWITCH
 # ============================================================
 
-# FALSE = PAPER MODE
+# FALSE = PAPER MODE (SAFE DEFAULT)
 # TRUE  = REAL ANGEL ONE ORDERS
-
-LIVE_TRADING = True
+#
+# Set LIVE_TRADING=true in your environment only after testing.
+LIVE_TRADING = os.getenv("LIVE_TRADING", "false").strip().lower() == "true"
 
 # Automatic strategy trading
 AUTO_TRADE = True
 
+# Automatic CE entry. PE can be enabled separately if required.
+AUTO_TRADE_CE = True
+AUTO_TRADE_PE = False
+
 # Duplicate protection
 DUPLICATE_PROTECTION = True
+
+# Refresh dashboard every N seconds while on Dashboard.
+AUTO_REFRESH_SECONDS = 10
+
+# Trade only during NSE market hours.
+MARKET_OPEN_TIME = (9, 15)
+MARKET_CLOSE_TIME = (15, 30)
 
 
 # ============================================================
@@ -209,6 +221,12 @@ DEFAULTS = {
     "last_order_id": None,
 
     "last_order_time": None,
+
+    # Persistent key of the last successfully processed strategy signal.
+    # Example: BUY_CE:2026-09-07 10:25:00+05:30
+    "last_auto_signal_key": None,
+
+    "auto_trade_status": "Waiting",
 }
 
 
@@ -1390,7 +1408,8 @@ def load_state():
     if not STATE_FILE.exists():
 
         return {
-            "orders": []
+            "orders": [],
+            "processed_signal_keys": []
         }
 
     try:
@@ -1409,7 +1428,8 @@ def load_state():
         ):
 
             return {
-                "orders": []
+                "orders": [],
+                "processed_signal_keys": []
             }
 
         if "orders" not in state:
@@ -1421,7 +1441,8 @@ def load_state():
     except Exception:
 
         return {
-            "orders": []
+            "orders": [],
+            "processed_signal_keys": []
         }
 
 
@@ -2332,302 +2353,217 @@ def show_order_book():
 # ORDER PANEL
 # ============================================================
 
-def show_order_panel(
-    spot
-):
+def show_order_panel(spot):
+    """
+    DISPLAY ONLY.
+
+    There are deliberately NO manual BUY buttons here.
+    Orders are created by auto_execute_strategy() when a
+    confirmed strategy signal appears.
+    """
 
     st.divider()
+    st.subheader("🤖 Automated NIFTY Order")
 
-    st.subheader(
-        "🛒 NIFTY BUY ORDER"
-    )
+    signal = st.session_state.signal
 
-    st.caption(
-        "BUY CE and BUY PE are manual "
-        "buttons and remain available "
-        "even when strategy signal is WAIT."
-    )
+    if signal == "BUY_CE":
+        option = st.session_state.ce_option
+        if option:
+            a, b, c, d = st.columns(4)
+            a.metric("Signal", "BUY CE")
+            b.metric("Strike", fmt_number(option["strike"], 0))
+            c.metric("LTP", fmt_number(option.get("ltp")))
+            d.metric("Lot Size", str(option["lot_size"]))
 
-    ce_option = None
-    pe_option = None
+            st.write(f"**Symbol:** `{option['symbol']}`")
+            st.write(f"**Expiry:** `{option['expiry']}`")
+            st.write(f"**Token:** `{option['token']}`")
 
-    # ========================================================
-    # CE
-    # ========================================================
+            if st.session_state.auto_trade_status:
+                st.info(
+                    "🤖 BUY CE is automated. "
+                    + str(st.session_state.auto_trade_status)
+                )
+        else:
+            st.warning("ATM CE is not available.")
 
-    try:
+    elif signal == "BUY_PE":
+        option = st.session_state.pe_option
+        if option:
+            a, b, c, d = st.columns(4)
+            a.metric("Signal", "BUY PE")
+            b.metric("Strike", fmt_number(option["strike"], 0))
+            c.metric("LTP", fmt_number(option.get("ltp")))
+            d.metric("Lot Size", str(option["lot_size"]))
 
-        ce_option = select_atm_option(
+            st.write(f"**Symbol:** `{option['symbol']}`")
+            st.write(f"**Expiry:** `{option['expiry']}`")
+            st.write(f"**Token:** `{option['token']}`")
+
+            if AUTO_TRADE_PE:
+                st.info(
+                    "🤖 BUY PE automation is enabled. "
+                    + str(st.session_state.auto_trade_status)
+                )
+            else:
+                st.warning(
+                    "BUY PE signal detected, but automatic PE trading "
+                    "is disabled. BUY CE automation remains enabled."
+                )
+        else:
+            st.warning("ATM PE is not available.")
+
+    else:
+        st.info(
+            "⏳ No confirmed entry. "
+            "The system is waiting for the Supertrend signal."
+        )
+
+
+# ============================================================
+# AUTOMATED STRATEGY EXECUTION
+# ============================================================
+
+def market_is_open(now=None):
+    """Return True only during NSE weekday trading hours."""
+    now = now or now_ist()
+
+    if now.weekday() >= 5:
+        return False
+
+    current_minutes = now.hour * 60 + now.minute
+    open_minutes = MARKET_OPEN_TIME[0] * 60 + MARKET_OPEN_TIME[1]
+    close_minutes = MARKET_CLOSE_TIME[0] * 60 + MARKET_CLOSE_TIME[1]
+
+    return open_minutes <= current_minutes <= close_minutes
+
+
+def signal_key(signal, signal_time):
+    if signal not in ("BUY_CE", "BUY_PE") or signal_time is None:
+        return None
+    return f"{signal}:{pd.Timestamp(signal_time).isoformat()}"
+
+
+def prepare_option_for_signal(signal, spot):
+    """Select the current ATM option and fetch its LTP."""
+    if signal == "BUY_CE":
+        option = select_atm_option(
             st.session_state.instruments,
             spot,
             "CE"
         )
-
-        try:
-
-            ce_option["ltp"] = (
-                get_option_ltp(
-                    ce_option
-                )
-            )
-
-        except Exception:
-
-            ce_option["ltp"] = None
-
-        st.session_state.ce_option = (
-            ce_option
-        )
-
-    except Exception as e:
-
-        st.error(
-            f"CE unavailable: {e}"
-        )
-
-    # ========================================================
-    # PE
-    # ========================================================
-
-    try:
-
-        pe_option = select_atm_option(
+    elif signal == "BUY_PE":
+        option = select_atm_option(
             st.session_state.instruments,
             spot,
             "PE"
         )
+    else:
+        return None
 
-        try:
+    option["ltp"] = get_option_ltp(option)
 
-            pe_option["ltp"] = (
-                get_option_ltp(
-                    pe_option
-                )
-            )
+    if signal == "BUY_CE":
+        st.session_state.ce_option = option
+        st.session_state.ce_ltp = option["ltp"]
+    else:
+        st.session_state.pe_option = option
+        st.session_state.pe_ltp = option["ltp"]
 
-        except Exception:
+    return option
 
-            pe_option["ltp"] = None
 
-        st.session_state.pe_option = (
-            pe_option
+def auto_execute_strategy(signal, signal_time, spot):
+    """
+    Execute exactly once for each confirmed signal candle.
+
+    BUY CE:
+      5m Supertrend flips GREEN
+      + 15m GREEN
+      + 4H GREEN
+
+    BUY PE is disabled by default. Set AUTO_TRADE_PE=True if
+    automatic PE entries are also wanted.
+    """
+
+    if not AUTO_TRADE:
+        st.session_state.auto_trade_status = "Automatic trading disabled."
+        return False
+
+    if signal == "BUY_CE" and not AUTO_TRADE_CE:
+        st.session_state.auto_trade_status = "Automatic CE trading disabled."
+        return False
+
+    if signal == "BUY_PE" and not AUTO_TRADE_PE:
+        st.session_state.auto_trade_status = "BUY PE detected; PE automation disabled."
+        return False
+
+    if signal not in ("BUY_CE", "BUY_PE"):
+        st.session_state.auto_trade_status = "Waiting for BUY signal."
+        return False
+
+    if not market_is_open():
+        st.session_state.auto_trade_status = (
+            "Signal detected outside NSE market hours; no order sent."
         )
+        return False
+
+    key = signal_key(signal, signal_time)
+    if not key:
+        st.session_state.auto_trade_status = "Signal timestamp unavailable."
+        return False
+
+    # This prevents the same signal candle from being submitted twice
+    # after Streamlit reruns or browser refreshes.
+    state = load_state()
+    processed = state.get("processed_signal_keys", [])
+
+    if key in processed or key == st.session_state.last_auto_signal_key:
+        st.session_state.auto_trade_status = (
+            f"Already processed: {key}"
+        )
+        return False
+
+    try:
+        st.session_state.auto_trade_status = (
+            f"Preparing automatic {signal}..."
+        )
+
+        option = prepare_option_for_signal(signal, spot)
+
+        if not option:
+            raise RuntimeError("ATM option selection failed.")
+
+        # Execute the actual order only after option/token/lot/LTP are known.
+        success, result = execute_buy(signal, option)
+
+        if not success:
+            st.session_state.auto_trade_status = (
+                f"Order failed: {result}"
+            )
+            return False
+
+        # Persist the signal key only after execute_buy() succeeds.
+        processed.append(key)
+        # Keep the state file reasonably small.
+        state["processed_signal_keys"] = processed[-100:]
+        save_state(state)
+
+        st.session_state.last_auto_signal_key = key
+        st.session_state.auto_trade_status = (
+            f"✅ {signal} order submitted | "
+            f"{option['symbol']} | Order ID: {result}"
+        )
+
+        return True
 
     except Exception as e:
-
-        st.error(
-            f"PE unavailable: {e}"
+        st.session_state.auto_trade_status = (
+            f"❌ Automatic {signal} failed: {e}"
         )
-
-    # ========================================================
-    # TWO PANELS
-    # ========================================================
-
-    c1, c2 = st.columns(2)
-
-    # ========================================================
-    # CE
-    # ========================================================
-
-    with c1:
-
-        st.markdown(
-            "### 🟢 ATM CALL OPTION"
-        )
-
-        if ce_option:
-
-            x1, x2, x3 = st.columns(
-                3
-            )
-
-            x1.metric(
-                "Strike",
-                fmt_number(
-                    ce_option["strike"],
-                    0
-                )
-            )
-
-            x2.metric(
-                "LTP",
-                fmt_number(
-                    ce_option.get(
-                        "ltp"
-                    )
-                )
-            )
-
-            x3.metric(
-                "Lot Size",
-                str(
-                    ce_option[
-                        "lot_size"
-                    ]
-                )
-            )
-
-            st.write(
-                "**Symbol:** "
-                f"`{ce_option['symbol']}`"
-            )
-
-            st.write(
-                "**Expiry:** "
-                f"`{ce_option['expiry']}`"
-            )
-
-            st.write(
-                "**Token:** "
-                f"`{ce_option['token']}`"
-            )
-
-            # =================================================
-            # BUY CE BUTTON ALWAYS VISIBLE
-            # =================================================
-
-            if st.button(
-                "🛒 BUY CE",
-                key="BUY_CE_MANUAL",
-                type="primary",
-                use_container_width=True
-            ):
-
-                success, result = (
-                    execute_buy(
-                        "BUY_CE",
-                        ce_option
-                    )
-                )
-
-                if success:
-
-                    if LIVE_TRADING:
-
-                        st.success(
-                            "✅ BUY CE order "
-                            "submitted."
-                        )
-
-                    else:
-
-                        st.success(
-                            "🟢 PAPER BUY CE "
-                            "created."
-                        )
-
-                    # Automatic Order Book
-                    # switch
-                    st.rerun()
-
-                else:
-
-                    st.error(
-                        "❌ BUY CE failed:\n"
-                        f"{result}"
-                    )
-
-    # ========================================================
-    # PE
-    # ========================================================
-
-    with c2:
-
-        st.markdown(
-            "### 🔴 ATM PUT OPTION"
-        )
-
-        if pe_option:
-
-            x1, x2, x3 = st.columns(
-                3
-            )
-
-            x1.metric(
-                "Strike",
-                fmt_number(
-                    pe_option["strike"],
-                    0
-                )
-            )
-
-            x2.metric(
-                "LTP",
-                fmt_number(
-                    pe_option.get(
-                        "ltp"
-                    )
-                )
-            )
-
-            x3.metric(
-                "Lot Size",
-                str(
-                    pe_option[
-                        "lot_size"
-                    ]
-                )
-            )
-
-            st.write(
-                "**Symbol:** "
-                f"`{pe_option['symbol']}`"
-            )
-
-            st.write(
-                "**Expiry:** "
-                f"`{pe_option['expiry']}`"
-            )
-
-            st.write(
-                "**Token:** "
-                f"`{pe_option['token']}`"
-            )
-
-            # =================================================
-            # BUY PE BUTTON ALWAYS VISIBLE
-            # =================================================
-
-            if st.button(
-                "🛒 BUY PE",
-                key="BUY_PE_MANUAL",
-                type="primary",
-                use_container_width=True
-            ):
-
-                success, result = (
-                    execute_buy(
-                        "BUY_PE",
-                        pe_option
-                    )
-                )
-
-                if success:
-
-                    if LIVE_TRADING:
-
-                        st.success(
-                            "✅ BUY PE order "
-                            "submitted."
-                        )
-
-                    else:
-
-                        st.success(
-                            "🔴 PAPER BUY PE "
-                            "created."
-                        )
-
-                    # Automatic Order Book
-                    # switch
-                    st.rerun()
-
-                else:
-
-                    st.error(
-                        "❌ BUY PE failed:\n"
-                        f"{result}"
-                    )
+        st.session_state.last_error = str(e)
+        return False
 
 
 # ============================================================
@@ -2879,6 +2815,30 @@ def show_dashboard():
     st.session_state.signal_time = (
         signal_time
     )
+
+    # ========================================================
+    # AUTOMATIC ORDER EXECUTION
+    # ========================================================
+    #
+    # IMPORTANT: This is intentionally called after the signal is
+    # calculated and before the dashboard is rendered. There are no
+    # manual BUY buttons.
+    #
+    order_submitted = auto_execute_strategy(
+        signal,
+        signal_time,
+        spot
+    )
+
+    # If an order was submitted, execute_buy() has already:
+    #   1. received the broker order ID,
+    #   2. refreshed the Angel One Order Book,
+    #   3. highlighted the new order,
+    #   4. selected "Order Book".
+    #
+    # Rerun so the user immediately lands on the Order Book.
+    if order_submitted:
+        st.rerun()
 
     # ========================================================
     # METRICS
@@ -3210,3 +3170,15 @@ st.sidebar.caption(
         "%d-%m-%Y %H:%M:%S"
     )
 )
+
+
+# ============================================================
+# AUTOMATIC REFRESH
+# ============================================================
+# Streamlit reruns periodically while Dashboard is open so that
+# a newly completed 5-minute candle can trigger the strategy.
+#
+# Order Book routing remains unchanged after an order is submitted.
+if section == "Dashboard" and AUTO_REFRESH_SECONDS > 0:
+    time.sleep(AUTO_REFRESH_SECONDS)
+    st.rerun()
