@@ -84,7 +84,7 @@ IST = ZoneInfo("Asia/Kolkata")
 # FALSE = NO REAL ORDER
 # TRUE  = REAL ANGEL ONE ORDER
 #
-LIVE_TRADING = False
+LIVE_TRADING = True
 
 # Automatic trading is OFF.
 AUTO_TRADE = False
