@@ -54,10 +54,10 @@ STATE_FILE = Path("trading_state.json")
 # CREDENTIALS
 # ============================================================
 
-API_KEY = os.getenv("ANGEL_API_KEY", "").strip()
-CLIENT_ID = os.getenv("ANGEL_CLIENT_ID", "").strip()
-PASSWORD = os.getenv("ANGEL_PASSWORD", "").strip()
-TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET", "").strip()
+ANGEL_API_KEY = os.getenv("ANGEL_API_KEY", "").strip()
+ANGEL_CLIENT_ID = os.getenv("ANGEL_CLIENT_ID", "").strip()
+ANGEL_PASSWORD = os.getenv("ANGEL_PASSWORD", "").strip()
+ANGEL_TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET", "").strip()
 
 
 # ============================================================
@@ -151,19 +151,19 @@ def get_totp_secret(raw):
 
 def login_angel_one():
 
-    if not API_KEY:
+    if not ANGEL_API_KEY:
         raise RuntimeError("ANGEL_API_KEY is missing")
 
-    if not CLIENT_ID:
+    if not ANGEL_CLIENT_ID:
         raise RuntimeError("ANGEL_CLIENT_ID is missing")
 
-    if not PASSWORD:
+    if not ANGEL_PASSWORD:
         raise RuntimeError("ANGEL_PASSWORD is missing")
 
-    if not TOTP_SECRET:
+    if not ANGEL_TOTP_SECRET:
         raise RuntimeError("ANGEL_TOTP_SECRET is missing")
 
-    secret = get_totp_secret(TOTP_SECRET)
+    secret = get_totp_secret(ANGEL_TOTP_SECRET)
 
     if not secret:
         raise RuntimeError("Invalid TOTP secret")
