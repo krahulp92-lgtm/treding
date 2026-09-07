@@ -36,7 +36,7 @@ IST = ZoneInfo("Asia/Kolkata")
 # ------------------------------------------------------------
 # False = NO REAL ORDER
 # True  = REAL BUY ORDER
-LIVE_TRADING = False
+LIVE_TRADING = True
 
 ST_PERIOD = 20
 ST_MULTIPLIER = 2.0
