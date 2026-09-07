@@ -63,10 +63,10 @@ IST = ZoneInfo("Asia/Kolkata")
 # FALSE = PAPER MODE
 # TRUE  = REAL ANGEL ONE ORDERS
 
-LIVE_TRADING = False
+LIVE_TRADING = True
 
 # Automatic strategy trading
-AUTO_TRADE = False
+AUTO_TRADE = True
 
 # Duplicate protection
 DUPLICATE_PROTECTION = True
