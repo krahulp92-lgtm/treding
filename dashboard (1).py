@@ -1,4 +1,4 @@
-```python
+
 # ============================================================
 # NIFTY LIVE SUPERTREND 20,2 + ANGEL ONE SMARTAPI
 # BUY ATM CE / PE
@@ -1447,4 +1447,4 @@ if st.button(
 ):
 
     st.rerun()
-```
+
