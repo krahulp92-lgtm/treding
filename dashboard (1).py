@@ -175,7 +175,7 @@ def login_angel_one():
             f"TOTP generation failed: {e}"
         )
 
-    api = SmartConnect(api_key=API_KEY)
+    api = SmartConnect(api_key=ANGEL_API_KEY)
 
     response = api.generateSession(
         CLIENT_ID,
