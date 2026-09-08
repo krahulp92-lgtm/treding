@@ -101,7 +101,7 @@ AUTO_TRADE_CE = True
 LIVE_TRADING = (
     os.getenv(
         "LIVE_TRADING",
-        "false",
+        "True",
     )
     .strip()
     .lower()
