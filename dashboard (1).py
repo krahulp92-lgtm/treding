@@ -129,11 +129,51 @@ INSTRUMENT_MASTER_URL = (
 INSTRUMENT_MASTER_FILE = Path("OpenAPIScripMaster.json")
 
 INSTRUMENTS_CACHE = None
-try:
-    instruments = load_instruments()
-    st.session_state.instruments = instruments
-except Exception as e:
-    st.error(f"Instrument master error: {e}")
+def load_instruments():
+    """
+    Load Angel One instrument master JSON.
+    Returns a list of instrument records.
+    """
+
+    global INSTRUMENTS_CACHE
+
+    if INSTRUMENTS_CACHE is not None:
+        return INSTRUMENTS_CACHE
+
+    if INSTRUMENT_MASTER_FILE.exists():
+        try:
+            with open(INSTRUMENT_MASTER_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if isinstance(data, list):
+                INSTRUMENTS_CACHE = data
+                return data
+
+        except Exception:
+            pass
+
+    try:
+        response = requests.get(
+            INSTRUMENT_MASTER_URL,
+            timeout=30
+        )
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not isinstance(data, list):
+            raise RuntimeError("Invalid instrument master format")
+
+        with open(INSTRUMENT_MASTER_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        INSTRUMENTS_CACHE = data
+        return data
+
+    except Exception as e:
+        raise RuntimeError(
+            f"Unable to load Angel One instrument master: {e}"
+        )
 
 
 # ============================================================
@@ -471,51 +511,7 @@ def angel_login():
 # ============================================================
 # INSTRUMENT MASTER
 # ============================================================
-def load_instruments():
-    """
-    Load Angel One instrument master JSON.
-    Returns a list of instrument records.
-    """
 
-    global INSTRUMENTS_CACHE
-
-    if INSTRUMENTS_CACHE is not None:
-        return INSTRUMENTS_CACHE
-
-    if INSTRUMENT_MASTER_FILE.exists():
-        try:
-            with open(INSTRUMENT_MASTER_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            if isinstance(data, list):
-                INSTRUMENTS_CACHE = data
-                return data
-
-        except Exception:
-            pass
-
-    try:
-        response = requests.get(
-            INSTRUMENT_MASTER_URL,
-            timeout=30
-        )
-        response.raise_for_status()
-
-        data = response.json()
-
-        if not isinstance(data, list):
-            raise RuntimeError("Invalid instrument master format")
-
-        with open(INSTRUMENT_MASTER_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-
-        INSTRUMENTS_CACHE = data
-        return data
-
-    except Exception as e:
-        raise RuntimeError(
-            f"Unable to load Angel One instrument master: {e}"
-        )
 @st.cache_data(ttl=60, show_spinner=False)
 def get_nifty_candles_cached(_api, token, from_date, to_date):
     params = {
