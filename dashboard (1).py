@@ -464,42 +464,33 @@ def angel_login():
 # INSTRUMENT MASTER
 # ============================================================
 
-@st.cache_data(
-    ttl=3600,
-    show_spinner=False,
-)
-def download_instrument_master():
-    try:
-        response = requests.get(
-            INSTRUMENT_URL,
-            timeout=30,
-        )
+@st.cache_data(ttl=60, show_spinner=False)
+def get_nifty_candles_cached(_api, token, from_date, to_date):
+    params = {
+        "exchange": "NSE",
+        "symboltoken": str(token),
+        "interval": "FIVE_MINUTE",
+        "fromdate": from_date,
+        "todate": to_date,
+    }
 
-        response.raise_for_status()
+    response = _api.getCandleData(params)
 
-        data = response.json()
-
-        if not isinstance(
-            data,
-            list,
-        ):
+    if not response or response.get("status") is not True:
+        message = str(response)
+        if "rate" in message.lower() or "access denied" in message.lower():
             raise RuntimeError(
-                "Instrument master response "
-                "is not a list."
+                "Angel One Candle API rate limit reached. "
+                "Please wait before requesting candles again."
             )
+        raise RuntimeError(f"Candle API failed: {message}")
 
-        return data
+    data = response.get("data") or []
 
-    except Exception as e:
-        raise RuntimeError(
-            "Instrument master download failed.\n"
-            f"URL: {INSTRUMENT_URL}\n"
-            f"Error: {e}"
-        )
+    if not data:
+        raise RuntimeError("Candle API returned no candle data.")
 
-
-def load_instruments():
-    return download_instrument_master()
+    return data
 
 
 # ============================================================
