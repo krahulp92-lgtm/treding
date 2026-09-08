@@ -108,7 +108,7 @@ LIVE_TRADING = (
     == "true"
 )
 
-AUTO_REFRESH_SECONDS = 10
+AUTO_REFRESH_SECONDS = 30
 
 DUPLICATE_PROTECTION = True
 
@@ -512,100 +512,56 @@ def angel_login():
 # INSTRUMENT MASTER
 # ============================================================
 
-@st.cache_data(ttl=60, show_spinner=False)
-def get_nifty_candles_cached(_api, token, from_date, to_date):
-    params = {
-        "exchange": "NSE",
-        "symboltoken": str(token),
-        "interval": "FIVE_MINUTE",
-        "fromdate": from_date,
-        "todate": to_date,
-    }
-
-    response = _api.getCandleData(params)
-
-    if not response or response.get("status") is not True:
-        message = str(response)
-        if "rate" in message.lower() or "access denied" in message.lower():
-            raise RuntimeError(
-                "Angel One Candle API rate limit reached. "
-                "Please wait before requesting candles again."
-            )
-        raise RuntimeError(f"Candle API failed: {message}")
-
-    data = response.get("data") or []
-
-    if not data:
-        raise RuntimeError("Candle API returned no candle data.")
-
-    return data
-
-
-# ============================================================
-# NIFTY LTP
-# ============================================================
-
-def get_nifty_ltp():
-    api = st.session_state.api
-
-    if api is None:
-        raise RuntimeError(
-            "Angel One is not connected."
-        )
-
-    try:
-        response = api.ltpData(
-            NIFTY_EXCHANGE,
-            "Nifty 50",
-            NIFTY_TOKEN,
-        )
-
-    except Exception as e:
-        raise RuntimeError(
-            f"NIFTY LTP API exception: {e}"
-        )
-
-    if not response:
-        raise RuntimeError(
-            "NIFTY LTP returned empty response."
-        )
-
-    if not response.get("status"):
-        raise RuntimeError(
-            "NIFTY LTP FAILED\n"
-            f"Message: {response.get('message')}\n"
-            f"Error code: {response.get('errorcode')}\n"
-            f"Response: {response}"
-        )
-
-    data = (
-        response.get("data")
-        or {}
-    )
-
-    ltp = data.get("ltp")
-
-    if ltp is None:
-        raise RuntimeError(
-            f"NIFTY LTP missing: {response}"
-        )
-
-    return float(ltp)
-
-
-# ============================================================
-# NIFTY CANDLES
-# ============================================================
-
 def get_nifty_candles(days=30):
+    """
+    Get NIFTY 5-minute candles with rate-limit protection.
+
+    Only ONE Candle API request is allowed every 60 seconds.
+    All other Streamlit reruns use the cached dataframe.
+    """
+
     api = st.session_state.api
 
     if api is None:
-        raise RuntimeError(
-            "Angel One is not connected."
-        )
+        raise RuntimeError("Angel One is not connected.")
 
-    end = now_ist()
+    now = now_ist()
+
+    # --------------------------------------------------------
+    # SESSION CACHE
+    # --------------------------------------------------------
+
+    cached_df = st.session_state.get("candle_cache_df")
+    cached_time = st.session_state.get("candle_cache_time")
+
+    if (
+        cached_df is not None
+        and cached_time is not None
+    ):
+        try:
+            age = (
+                now - cached_time
+            ).total_seconds()
+
+            if age < 60:
+                return cached_df.copy()
+
+        except Exception:
+            pass
+
+    # --------------------------------------------------------
+    # ROUND END TIME TO COMPLETED 5-MINUTE CANDLE
+    # --------------------------------------------------------
+
+    minute = (
+        now.minute // 5
+    ) * 5
+
+    end = now.replace(
+        minute=minute,
+        second=0,
+        microsecond=0,
+    )
 
     start = end - timedelta(
         days=days
@@ -613,7 +569,7 @@ def get_nifty_candles(days=30):
 
     params = {
         "exchange": NIFTY_EXCHANGE,
-        "symboltoken": NIFTY_TOKEN,
+        "symboltoken": str(NIFTY_TOKEN),
         "interval": CANDLE_INTERVAL,
         "fromdate": start.strftime(
             "%Y-%m-%d %H:%M"
@@ -623,12 +579,34 @@ def get_nifty_candles(days=30):
         ),
     }
 
+    # --------------------------------------------------------
+    # API CALL
+    # --------------------------------------------------------
+
     try:
-        response = api.getCandleData(
-            params
-        )
+        response = api.getCandleData(params)
 
     except Exception as e:
+
+        message = str(e)
+
+        if (
+            "access denied" in message.lower()
+            or "rate" in message.lower()
+        ):
+            # If we have an older cache, use it instead
+            if cached_df is not None:
+                st.warning(
+                    "Angel One Candle API rate limit reached. "
+                    "Using the last successful candle data."
+                )
+                return cached_df.copy()
+
+            raise RuntimeError(
+                "Angel One Candle API rate limit reached. "
+                "Please wait before requesting candles again."
+            )
+
         raise RuntimeError(
             f"Candle API exception: {e}"
         )
@@ -639,6 +617,25 @@ def get_nifty_candles(days=30):
         )
 
     if not response.get("status"):
+        message = str(
+            response.get("message", "")
+        )
+
+        if (
+            "access denied" in message.lower()
+            or "rate" in message.lower()
+        ):
+            if cached_df is not None:
+                st.warning(
+                    "Angel One Candle API rate limit reached. "
+                    "Using the last successful candle data."
+                )
+                return cached_df.copy()
+
+            raise RuntimeError(
+                "Angel One Candle API rate limit reached."
+            )
+
         raise RuntimeError(
             "Candle API FAILED\n"
             f"Message: {response.get('message')}\n"
@@ -646,15 +643,16 @@ def get_nifty_candles(days=30):
             f"Response: {response}"
         )
 
-    rows = (
-        response.get("data")
-        or []
-    )
+    rows = response.get("data") or []
 
     if not rows:
         raise RuntimeError(
             "Candle API returned no candles."
         )
+
+    # --------------------------------------------------------
+    # DATAFRAME
+    # --------------------------------------------------------
 
     df = pd.DataFrame(
         rows,
@@ -713,7 +711,70 @@ def get_nifty_candles(days=30):
         .reset_index(drop=True)
     )
 
+    # --------------------------------------------------------
+    # SAVE SUCCESSFUL RESPONSE
+    # --------------------------------------------------------
+
+    st.session_state.candle_cache_df = df.copy()
+    st.session_state.candle_cache_time = now
+
     return df
+
+# ============================================================
+# NIFTY LTP
+# ============================================================
+
+def get_nifty_ltp():
+    api = st.session_state.api
+
+    if api is None:
+        raise RuntimeError(
+            "Angel One is not connected."
+        )
+
+    try:
+        response = api.ltpData(
+            NIFTY_EXCHANGE,
+            "Nifty 50",
+            NIFTY_TOKEN,
+        )
+
+    except Exception as e:
+        raise RuntimeError(
+            f"NIFTY LTP API exception: {e}"
+        )
+
+    if not response:
+        raise RuntimeError(
+            "NIFTY LTP returned empty response."
+        )
+
+    if not response.get("status"):
+        raise RuntimeError(
+            "NIFTY LTP FAILED\n"
+            f"Message: {response.get('message')}\n"
+            f"Error code: {response.get('errorcode')}\n"
+            f"Response: {response}"
+        )
+
+    data = (
+        response.get("data")
+        or {}
+    )
+
+    ltp = data.get("ltp")
+
+    if ltp is None:
+        raise RuntimeError(
+            f"NIFTY LTP missing: {response}"
+        )
+
+    return float(ltp)
+
+
+# ============================================================
+# NIFTY CANDLES
+# ============================================================
 
 
 # ============================================================
