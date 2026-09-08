@@ -471,34 +471,6 @@ def angel_login():
 # ============================================================
 # INSTRUMENT MASTER
 # ============================================================
-
-@st.cache_data(ttl=60, show_spinner=False)
-def get_nifty_candles_cached(_api, token, from_date, to_date):
-    params = {
-        "exchange": "NSE",
-        "symboltoken": str(token),
-        "interval": "FIVE_MINUTE",
-        "fromdate": from_date,
-        "todate": to_date,
-    }
-
-    response = _api.getCandleData(params)
-
-    if not response or response.get("status") is not True:
-        message = str(response)
-        if "rate" in message.lower() or "access denied" in message.lower():
-            raise RuntimeError(
-                "Angel One Candle API rate limit reached. "
-                "Please wait before requesting candles again."
-            )
-        raise RuntimeError(f"Candle API failed: {message}")
-
-    data = response.get("data") or []
-
-    if not data:
-        raise RuntimeError("Candle API returned no candle data.")
-
-    return data
 def load_instruments():
     """
     Load Angel One instrument master JSON.
@@ -544,6 +516,34 @@ def load_instruments():
         raise RuntimeError(
             f"Unable to load Angel One instrument master: {e}"
         )
+@st.cache_data(ttl=60, show_spinner=False)
+def get_nifty_candles_cached(_api, token, from_date, to_date):
+    params = {
+        "exchange": "NSE",
+        "symboltoken": str(token),
+        "interval": "FIVE_MINUTE",
+        "fromdate": from_date,
+        "todate": to_date,
+    }
+
+    response = _api.getCandleData(params)
+
+    if not response or response.get("status") is not True:
+        message = str(response)
+        if "rate" in message.lower() or "access denied" in message.lower():
+            raise RuntimeError(
+                "Angel One Candle API rate limit reached. "
+                "Please wait before requesting candles again."
+            )
+        raise RuntimeError(f"Candle API failed: {message}")
+
+    data = response.get("data") or []
+
+    if not data:
+        raise RuntimeError("Candle API returned no candle data.")
+
+    return data
+
 
 # ============================================================
 # NIFTY LTP
