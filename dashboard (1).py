@@ -1063,10 +1063,7 @@ def supertrend(
 
     return x
 
-return supertrend(
-    x.reset_index(drop=True),
-    period=ST_PERIOD,
-    multiplier=ST_MULTIPLIER,
+
 )
 # ============================================================
 # CALCULATE 2-MINUTE SUPERTREND
@@ -1122,15 +1119,13 @@ def calculate_2min_supertrend(
         ]
     )
 
-    return supertrend(
-        x.reset_index(
-            drop=True
-        ),
-        period=20,
-        multiplier=1.5,
-    )
+    
 
-
+return supertrend(
+    x.reset_index(drop=True),
+    period=ST_PERIOD,
+    multiplier=ST_MULTIPLIER,
+)
 # ============================================================
 # LAST CLOSED 2-MINUTE CANDLE
 # ============================================================
