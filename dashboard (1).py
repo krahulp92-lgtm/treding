@@ -6,7 +6,7 @@
 #
 # STRATEGY
 # ------------------------------------------------------------
-# 2-MINUTE SUPERTREND (20, 2.0)
+# 2-MINUTE SUPERTREND (20, 1.5)
 # GREEN FLIP
 #       ↓
 # AUTOMATIC BUY ATM NIFTY CE
