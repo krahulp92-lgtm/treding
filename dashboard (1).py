@@ -268,9 +268,9 @@ def angel_login():
     smart_api = SmartConnect(api_key=ANGEL_API_KEY)
 
     response = smart_api.generateSession(
-        CLIENT_ID,
-        PIN,
-        totp,
+        ANGEL_CLIENT_ID,
+        ANGEL_PASSWORD,
+        ANGEL_TOTP_SECRET,
     )
 
     if not isinstance(response, dict) or not response.get("status"):
