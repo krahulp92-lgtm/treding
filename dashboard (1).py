@@ -1,4 +1,4 @@
-```python
+
 # ============================================================
 # dashboard.py
 # NIFTY AUTOMATIC BUY CE ONLY - ANGEL ONE SMARTAPI
@@ -3058,4 +3058,4 @@ time.sleep(
 )
 
 st.rerun()
-```
+
