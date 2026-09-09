@@ -71,7 +71,7 @@ ANGEL_TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET", "").strip()
 # false = LIVE mode, real broker order
 PAPER_TRADING = os.getenv(
     "PAPER_TRADING",
-    "true",
+    "false",
 ).strip().lower() in (
     "1",
     "true",
