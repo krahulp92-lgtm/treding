@@ -1119,8 +1119,6 @@ def calculate_2min_supertrend(
         ]
     )
 
-    
-
 return supertrend(
     x.reset_index(drop=True),
     period=ST_PERIOD,
