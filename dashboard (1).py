@@ -268,7 +268,7 @@ def angel_login():
     smart_api = SmartConnect(api_key=API_KEY)
 
     response = smart_api.generateSession(
-        CLIENT_CODE,
+        CLIENT_ID,
         PIN,
         totp,
     )
