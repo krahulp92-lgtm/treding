@@ -53,7 +53,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 # ONLY 2-MINUTE SUPERTREND
 ST_PERIOD = 20
-ST_MULTIPLIER = 2.0
+ST_MULTIPLIER = 1.5
 
 # NIFTY 50
 NIFTY_TOKEN = "99926000"
@@ -789,7 +789,7 @@ def get_nifty_2min_candles(
 def supertrend(
     df,
     period=20,
-    multiplier=2.0,
+    multiplier=1.5,
 ):
 
     x = df.copy()
