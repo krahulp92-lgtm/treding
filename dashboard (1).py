@@ -255,7 +255,7 @@ def angel_login():
             "Missing credentials: " + ", ".join(missing)
         )
 
-    secret = clean_secret(TOTP_SECRET)
+    secret = clean_secret(ANGEL_TOTP_SECRET)
 
     try:
         totp = pyotp.TOTP(secret).now()
@@ -265,7 +265,7 @@ def angel_login():
             f"Angel One or the otpauth URI. Details: {exc}"
         )
 
-    smart_api = SmartConnect(api_key=API_KEY)
+    smart_api = SmartConnect(api_key=ANGEL_API_KEY)
 
     response = smart_api.generateSession(
         CLIENT_ID,
