@@ -93,7 +93,7 @@ REFRESH_SECONDS = int(
 PAPER_TRADING = (
     os.getenv(
         "PAPER_TRADING",
-        "true",
+        "false",
     )
     .strip()
     .lower()
