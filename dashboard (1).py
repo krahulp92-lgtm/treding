@@ -168,7 +168,7 @@ def credentials_ok():
 
     if not ANGEL_API_KEY:
         missing.append("ANGEL_API_KEY")
-    if not ANGEL_CLIENT_CODE:
+    if not ANGEL_CLIENT_ID:
         missing.append("ANGEL_CLIENT_ID")
     if not ANGEL_PASSWORD:
         missing.append("ANGEL_PASSWORD")
