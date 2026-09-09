@@ -53,10 +53,10 @@ st.set_page_config(
 
 IST = ZoneInfo("Asia/Kolkata")
 
-API_KEY = os.getenv("ANGEL_API_KEY", "")
-CLIENT_CODE = os.getenv("ANGEL_CLIENT_ID", "")
-PIN = os.getenv("ANGEL_PASSWORD", "")
-TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET", "")
+ANGEL_API_KEY = os.getenv("ANGEL_API_KEY", "")
+ANGEL_CLIENT_ID = os.getenv("ANGEL_CLIENT_ID", "")
+ANGEL_PASSWORD = os.getenv("ANGEL_PASSWORD", "")
+ANGEL_TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET", "")
 
 # SAFE DEFAULT. No real broker order is sent.
 PAPER_TRADING = os.getenv("PAPER_TRADING", "false").strip().lower() in (
@@ -166,13 +166,13 @@ def clean_secret(raw):
 def credentials_ok():
     missing = []
 
-    if not API_KEY:
+    if not ANGEL_API_KEY:
         missing.append("ANGEL_API_KEY")
-    if not CLIENT_CODE:
+    if not ANGEL_CLIENT_CODE:
         missing.append("ANGEL_CLIENT_ID")
-    if not PIN:
+    if not ANGEL_PASSWORD:
         missing.append("ANGEL_PASSWORD")
-    if not TOTP_SECRET:
+    if not ANGEL_TOTP_SECRET:
         missing.append("ANGEL_TOTP_SECRET")
 
     return missing
