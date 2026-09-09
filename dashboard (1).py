@@ -489,9 +489,9 @@ def angel_login():
     # SEND THE CURRENT 6-DIGIT OTP,
     # NOT ANGEL_TOTP_SECRET
     # --------------------------------------------------------
-totp = pyotp.TOTP(secret).now()
+  totp = pyotp.TOTP(secret).now()
 
-try:
+  try:
 
         response = smart_api.generateSession(
             ANGEL_CLIENT_ID,
