@@ -91,11 +91,7 @@ INSTRUMENT_URL = (
     "https://margincalculator.angelone.in/"
     "OpenAPI_File/files/OpenAPIScripMaster.json"
 )
-return supertrend(
-    x.reset_index(drop=True),
-    period=ST_PERIOD,
-    multiplier=ST_MULTIPLIER,
-)
+
 
 # ============================================================
 # STREAMLIT SECRETS / ENVIRONMENT
@@ -1067,7 +1063,11 @@ def supertrend(
 
     return x
 
-
+return supertrend(
+    x.reset_index(drop=True),
+    period=ST_PERIOD,
+    multiplier=ST_MULTIPLIER,
+)
 # ============================================================
 # CALCULATE 2-MINUTE SUPERTREND
 # ============================================================
