@@ -729,286 +729,195 @@ def get_nifty_candles(
 # SUPERTREND
 # ============================================================
 
-def calculate_supertrend(
-    df,
-    period=ST_PERIOD,
-    multiplier=ST_MULTIPLIER,
-):
+# ============================================================
+# 2-MINUTE SUPERTREND (20, 2)
+# ============================================================
 
+def supertrend(df, period=20, multiplier=2.0):
     df = df.copy()
-
-    if len(df) < period + 5:
-
-        raise RuntimeError(
-            f"Not enough candles for "
-            f"Supertrend {period},{multiplier}. "
-            f"Received {len(df)}."
-        )
 
     high = df["high"].astype(float)
     low = df["low"].astype(float)
     close = df["close"].astype(float)
 
+    # True Range
     prev_close = close.shift(1)
 
     tr = pd.concat(
         [
             high - low,
-
-            (
-                high
-                - prev_close
-            ).abs(),
-
-            (
-                low
-                - prev_close
-            ).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
         ],
-        axis=1,
+        axis=1
     ).max(axis=1)
 
+    # Wilder ATR
     atr = tr.ewm(
         alpha=1 / period,
         adjust=False,
-        min_periods=period,
+        min_periods=period
     ).mean()
 
-    hl2 = (
-        high + low
-    ) / 2.0
+    hl2 = (high + low) / 2
 
-    basic_upper = (
-        hl2
-        + multiplier * atr
-    )
+    basic_upper = hl2 + multiplier * atr
+    basic_lower = hl2 - multiplier * atr
 
-    basic_lower = (
-        hl2
-        - multiplier * atr
-    )
+    final_upper = pd.Series(np.nan, index=df.index)
+    final_lower = pd.Series(np.nan, index=df.index)
+    direction = pd.Series(np.nan, index=df.index)
 
-    final_upper = (
-        basic_upper.copy()
-    )
-
-    final_lower = (
-        basic_lower.copy()
-    )
-
-    for i in range(
-        1,
-        len(df),
-    ):
-
-        if (
-            pd.isna(
-                final_upper.iloc[
-                    i - 1
-                ]
-            )
-            or
-            basic_upper.iloc[i]
-            < final_upper.iloc[
-                i - 1
-            ]
-            or
-            close.iloc[
-                i - 1
-            ]
-            > final_upper.iloc[
-                i - 1
-            ]
-        ):
-
-            final_upper.iloc[i] = (
-                basic_upper.iloc[i]
-            )
-
-        else:
-
-            final_upper.iloc[i] = (
-                final_upper.iloc[
-                    i - 1
-                ]
-            )
-
-        if (
-            pd.isna(
-                final_lower.iloc[
-                    i - 1
-                ]
-            )
-            or
-            basic_lower.iloc[i]
-            > final_lower.iloc[
-                i - 1
-            ]
-            or
-            close.iloc[
-                i - 1
-            ]
-            < final_lower.iloc[
-                i - 1
-            ]
-        ):
-
-            final_lower.iloc[i] = (
-                basic_lower.iloc[i]
-            )
-
-        else:
-
-            final_lower.iloc[i] = (
-                final_lower.iloc[
-                    i - 1
-                ]
-            )
-
-    direction = pd.Series(
-        index=df.index,
-        dtype="float64",
-    )
-
-    supertrend = pd.Series(
-        index=df.index,
-        dtype="float64",
-    )
-
-    first_valid = (
-        atr.first_valid_index()
-    )
+    first_valid = atr.first_valid_index()
 
     if first_valid is None:
-        raise RuntimeError(
-            "ATR could not be calculated."
-        )
+        df["Supertrend"] = np.nan
+        df["ST_Green"] = False
+        df["ST_Red"] = False
+        df["ST_Flip_Green"] = False
+        df["ST_Flip_Red"] = False
+        return df
 
-    first_i = (
-        df.index.get_loc(
-            first_valid
-        )
-    )
+    first_i = df.index.get_loc(first_valid)
 
-    direction.iloc[
-        :first_i
-    ] = np.nan
+    final_upper.iloc[first_i] = basic_upper.iloc[first_i]
+    final_lower.iloc[first_i] = basic_lower.iloc[first_i]
 
-    supertrend.iloc[
-        :first_i
-    ] = np.nan
+    # Initial direction
+    direction.iloc[first_i] = 1
 
-    direction.iloc[
-        first_i
-    ] = 1
+    for i in range(first_i + 1, len(df)):
 
-    supertrend.iloc[
-        first_i
-    ] = final_lower.iloc[
-        first_i
-    ]
-
-    for i in range(
-        first_i + 1,
-        len(df),
-    ):
-
-        prev_st = (
-            supertrend.iloc[
-                i - 1
-            ]
-        )
-
-        if pd.isna(prev_st):
-
-            direction.iloc[i] = 1
-
-            supertrend.iloc[i] = (
-                final_lower.iloc[i]
-            )
-
-            continue
-
+        # Final upper band
         if (
-            prev_st
-            == final_upper.iloc[
-                i - 1
-            ]
+            basic_upper.iloc[i] < final_upper.iloc[i - 1]
+            or close.iloc[i - 1] > final_upper.iloc[i - 1]
         ):
-
-            if (
-                close.iloc[i]
-                <= final_upper.iloc[i]
-            ):
-
-                supertrend.iloc[i] = (
-                    final_upper.iloc[i]
-                )
-
-                direction.iloc[i] = -1
-
-            else:
-
-                supertrend.iloc[i] = (
-                    final_lower.iloc[i]
-                )
-
-                direction.iloc[i] = 1
-
+            final_upper.iloc[i] = basic_upper.iloc[i]
         else:
+            final_upper.iloc[i] = final_upper.iloc[i - 1]
 
-            if (
-                close.iloc[i]
-                >= final_lower.iloc[i]
-            ):
+        # Final lower band
+        if (
+            basic_lower.iloc[i] > final_lower.iloc[i - 1]
+            or close.iloc[i - 1] < final_lower.iloc[i - 1]
+        ):
+            final_lower.iloc[i] = basic_lower.iloc[i]
+        else:
+            final_lower.iloc[i] = final_lower.iloc[i - 1]
 
-                supertrend.iloc[i] = (
-                    final_lower.iloc[i]
-                )
-
+        # Direction
+        if direction.iloc[i - 1] == -1:
+            if close.iloc[i] > final_upper.iloc[i]:
+                direction.iloc[i] = 1
+            else:
+                direction.iloc[i] = -1
+        else:
+            if close.iloc[i] < final_lower.iloc[i]:
+                direction.iloc[i] = -1
+            else:
                 direction.iloc[i] = 1
 
-            else:
+    # Supertrend line
+    supertrend_line = pd.Series(np.nan, index=df.index)
 
-                supertrend.iloc[i] = (
-                    final_upper.iloc[i]
-                )
+    green = direction == 1
+    red = direction == -1
 
-                direction.iloc[i] = -1
+    supertrend_line.loc[green] = final_lower.loc[green]
+    supertrend_line.loc[red] = final_upper.loc[red]
 
-    df["atr"] = atr
-    df["final_upper"] = final_upper
-    df["final_lower"] = final_lower
-    df["supertrend"] = supertrend
-    df["direction"] = direction.astype("Int64")
+    df["ATR"] = atr
+    df["Supertrend"] = supertrend_line
+    df["ST_Direction"] = direction
+    df["ST_Green"] = direction == 1
+    df["ST_Red"] = direction == -1
 
-    df["green"] = (
-        df["direction"] == 1
+    # Flip signals
+    df["ST_Flip_Green"] = (
+        (df["ST_Direction"] == 1) &
+        (df["ST_Direction"].shift(1) == -1)
     )
 
-    df["red"] = (
-        df["direction"] == -1
-    )
-
-    previous_direction = (
-        df["direction"].shift(1)
-    )
-
-    df["flip_green"] = (
-        (df["direction"] == 1)
-        &
-        (previous_direction == -1)
-    )
-
-    df["flip_red"] = (
-        (df["direction"] == -1)
-        &
-        (previous_direction == 1)
+    df["ST_Flip_Red"] = (
+        (df["ST_Direction"] == -1) &
+        (df["ST_Direction"].shift(1) == 1)
     )
 
     return df
 
 
+# ============================================================
+# 2-MINUTE DATA
+# ============================================================
+
+def calculate_2min_supertrend(df):
+    """
+    Input columns required:
+        datetime, open, high, low, close, volume
+
+    Calculates:
+        2-minute Supertrend 20,2
+    """
+
+    df = df.copy()
+
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.sort_values("datetime")
+    df = df.drop_duplicates("datetime")
+    df = df.set_index("datetime")
+
+    # Build 2-minute candles
+    df2 = df.resample(
+        "2min",
+        origin="start_day",
+        offset="9h15min",
+        label="right",
+        closed="left"
+    ).agg({
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum"
+    })
+
+    df2 = df2.dropna(subset=["open", "high", "low", "close"])
+
+    # Supertrend 20,2
+    df2 = supertrend(
+        df2,
+        period=20,
+        multiplier=2.0
+    )
+
+    return df2.reset_index()
+
+
+# ============================================================
+# SIGNAL
+# ============================================================
+
+def get_2min_signal(df2):
+    """
+    Returns:
+        BUY CE  -> 2-minute Supertrend flips GREEN
+        BUY PE  -> 2-minute Supertrend flips RED
+        WAIT    -> no new flip
+    """
+
+    if df2 is None or len(df2) < 22:
+        return "WAIT"
+
+    last = df2.iloc[-1]
+
+    if bool(last["ST_Flip_Green"]):
+        return "BUY CE"
+
+    if bool(last["ST_Flip_Red"]):
+        return "BUY PE"
+
+    return "WAIT"
 # ============================================================
 # RESAMPLING
 # ============================================================
