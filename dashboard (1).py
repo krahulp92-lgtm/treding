@@ -733,14 +733,53 @@ def get_nifty_candles(
 # 2-MINUTE SUPERTREND (20, 2)
 # ============================================================
 
+# ============================================================
+# 2-MINUTE SUPERTREND (20, 2)
+# ============================================================
+
+import pandas as pd
+import numpy as np
+
+
+# ============================================================
+# SUPERTREND
+# ============================================================
+
 def supertrend(df, period=20, multiplier=2.0):
+    """
+    Calculate Wilder-style Supertrend.
+
+    Required columns:
+        high, low, close
+
+    Returns:
+        ATR
+        Supertrend
+        ST_Direction
+        ST_Green
+        ST_Red
+        ST_Flip_Green
+        ST_Flip_Red
+    """
+
     df = df.copy()
 
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    close = df["close"].astype(float)
+    required = ["high", "low", "close"]
+    missing = [c for c in required if c not in df.columns]
 
+    if missing:
+        raise ValueError(
+            f"Missing required columns: {', '.join(missing)}"
+        )
+
+    high = pd.to_numeric(df["high"], errors="coerce")
+    low = pd.to_numeric(df["low"], errors="coerce")
+    close = pd.to_numeric(df["close"], errors="coerce")
+
+    # --------------------------------------------------------
     # True Range
+    # --------------------------------------------------------
+
     prev_close = close.shift(1)
 
     tr = pd.concat(
@@ -749,29 +788,56 @@ def supertrend(df, period=20, multiplier=2.0):
             (high - prev_close).abs(),
             (low - prev_close).abs(),
         ],
-        axis=1
+        axis=1,
     ).max(axis=1)
 
+    # --------------------------------------------------------
     # Wilder ATR
+    # --------------------------------------------------------
+
     atr = tr.ewm(
-        alpha=1 / period,
+        alpha=1.0 / period,
         adjust=False,
-        min_periods=period
+        min_periods=period,
     ).mean()
 
-    hl2 = (high + low) / 2
+    # --------------------------------------------------------
+    # Basic Bands
+    # --------------------------------------------------------
 
-    basic_upper = hl2 + multiplier * atr
-    basic_lower = hl2 - multiplier * atr
+    hl2 = (high + low) / 2.0
 
-    final_upper = pd.Series(np.nan, index=df.index)
-    final_lower = pd.Series(np.nan, index=df.index)
-    direction = pd.Series(np.nan, index=df.index)
+    basic_upper = hl2 + (multiplier * atr)
+    basic_lower = hl2 - (multiplier * atr)
+
+    # --------------------------------------------------------
+    # Final Bands
+    # --------------------------------------------------------
+
+    final_upper = pd.Series(
+        np.nan,
+        index=df.index,
+        dtype=float,
+    )
+
+    final_lower = pd.Series(
+        np.nan,
+        index=df.index,
+        dtype=float,
+    )
+
+    direction = pd.Series(
+        np.nan,
+        index=df.index,
+        dtype=float,
+    )
 
     first_valid = atr.first_valid_index()
 
     if first_valid is None:
+        df["ATR"] = np.nan
         df["Supertrend"] = np.nan
+        df["ST_Direction"] = np.nan
         df["ST_Green"] = False
         df["ST_Red"] = False
         df["ST_Flip_Green"] = False
@@ -783,12 +849,16 @@ def supertrend(df, period=20, multiplier=2.0):
     final_upper.iloc[first_i] = basic_upper.iloc[first_i]
     final_lower.iloc[first_i] = basic_lower.iloc[first_i]
 
-    # Initial direction
+    # Initial trend = GREEN
     direction.iloc[first_i] = 1
+
+    # --------------------------------------------------------
+    # Calculate bands + direction
+    # --------------------------------------------------------
 
     for i in range(first_i + 1, len(df)):
 
-        # Final upper band
+        # Final Upper Band
         if (
             basic_upper.iloc[i] < final_upper.iloc[i - 1]
             or close.iloc[i - 1] > final_upper.iloc[i - 1]
@@ -797,7 +867,7 @@ def supertrend(df, period=20, multiplier=2.0):
         else:
             final_upper.iloc[i] = final_upper.iloc[i - 1]
 
-        # Final lower band
+        # Final Lower Band
         if (
             basic_lower.iloc[i] > final_lower.iloc[i - 1]
             or close.iloc[i - 1] < final_lower.iloc[i - 1]
@@ -807,19 +877,31 @@ def supertrend(df, period=20, multiplier=2.0):
             final_lower.iloc[i] = final_lower.iloc[i - 1]
 
         # Direction
-        if direction.iloc[i - 1] == -1:
+        previous_direction = direction.iloc[i - 1]
+
+        if previous_direction == -1:
+
             if close.iloc[i] > final_upper.iloc[i]:
                 direction.iloc[i] = 1
             else:
                 direction.iloc[i] = -1
+
         else:
+
             if close.iloc[i] < final_lower.iloc[i]:
                 direction.iloc[i] = -1
             else:
                 direction.iloc[i] = 1
 
-    # Supertrend line
-    supertrend_line = pd.Series(np.nan, index=df.index)
+    # --------------------------------------------------------
+    # Supertrend Line
+    # --------------------------------------------------------
+
+    supertrend_line = pd.Series(
+        np.nan,
+        index=df.index,
+        dtype=float,
+    )
 
     green = direction == 1
     red = direction == -1
@@ -827,72 +909,276 @@ def supertrend(df, period=20, multiplier=2.0):
     supertrend_line.loc[green] = final_lower.loc[green]
     supertrend_line.loc[red] = final_upper.loc[red]
 
+    # --------------------------------------------------------
+    # Output
+    # --------------------------------------------------------
+
     df["ATR"] = atr
     df["Supertrend"] = supertrend_line
     df["ST_Direction"] = direction
-    df["ST_Green"] = direction == 1
-    df["ST_Red"] = direction == -1
 
-    # Flip signals
+    df["ST_Green"] = direction.eq(1)
+    df["ST_Red"] = direction.eq(-1)
+
+    # --------------------------------------------------------
+    # Flip GREEN
+    # Previous candle RED
+    # Current candle GREEN
+    # --------------------------------------------------------
+
     df["ST_Flip_Green"] = (
-        (df["ST_Direction"] == 1) &
-        (df["ST_Direction"].shift(1) == -1)
+        df["ST_Direction"].eq(1)
+        & df["ST_Direction"].shift(1).eq(-1)
     )
 
+    # --------------------------------------------------------
+    # Flip RED
+    # Previous candle GREEN
+    # Current candle RED
+    # --------------------------------------------------------
+
     df["ST_Flip_Red"] = (
-        (df["ST_Direction"] == -1) &
-        (df["ST_Direction"].shift(1) == 1)
+        df["ST_Direction"].eq(-1)
+        & df["ST_Direction"].shift(1).eq(1)
     )
 
     return df
 
 
 # ============================================================
-# 2-MINUTE DATA
+# BUILD 2-MINUTE CANDLES
 # ============================================================
 
 def calculate_2min_supertrend(df):
     """
-    Input columns required:
-        datetime, open, high, low, close, volume
+    Input columns:
+        datetime
+        open
+        high
+        low
+        close
+        volume
 
-    Calculates:
-        2-minute Supertrend 20,2
+    Output:
+        2-minute candles with Supertrend (20, 2).
     """
+
+    if df is None or df.empty:
+        return pd.DataFrame()
 
     df = df.copy()
 
-    df["datetime"] = pd.to_datetime(df["datetime"])
+    required = [
+        "datetime",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    ]
+
+    missing = [c for c in required if c not in df.columns]
+
+    if missing:
+        raise ValueError(
+            f"Missing required columns: {', '.join(missing)}"
+        )
+
+    # --------------------------------------------------------
+    # Datetime
+    # --------------------------------------------------------
+
+    df["datetime"] = pd.to_datetime(
+        df["datetime"],
+        errors="coerce",
+    )
+
+    df = df.dropna(subset=["datetime"])
+
+    # --------------------------------------------------------
+    # Numeric OHLCV
+    # --------------------------------------------------------
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce",
+        )
+
+    df = df.dropna(
+        subset=["open", "high", "low", "close"]
+    )
+
+    # --------------------------------------------------------
+    # Sort / remove duplicates
+    # --------------------------------------------------------
+
     df = df.sort_values("datetime")
-    df = df.drop_duplicates("datetime")
+    df = df.drop_duplicates(
+        subset=["datetime"],
+        keep="last",
+    )
+
     df = df.set_index("datetime")
 
-    # Build 2-minute candles
+    # --------------------------------------------------------
+    # 2-minute resampling
+    #
+    # Trading day starts at 09:15 IST.
+    #
+    # 09:15-09:17
+    # 09:17-09:19
+    # 09:19-09:21
+    # ...
+    # --------------------------------------------------------
+
     df2 = df.resample(
         "2min",
         origin="start_day",
         offset="9h15min",
         label="right",
-        closed="left"
-    ).agg({
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum"
-    })
+        closed="left",
+    ).agg(
+        {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+    )
 
-    df2 = df2.dropna(subset=["open", "high", "low", "close"])
+    # Remove empty candles
+    df2 = df2.dropna(
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
+    )
 
+    if df2.empty:
+        return pd.DataFrame()
+
+    # --------------------------------------------------------
     # Supertrend 20,2
+    # --------------------------------------------------------
+
     df2 = supertrend(
         df2,
         period=20,
-        multiplier=2.0
+        multiplier=2.0,
     )
 
     return df2.reset_index()
 
+
+# ============================================================
+# 2-MINUTE SIGNAL
+# ============================================================
+
+def get_2min_signal(df2):
+    """
+    Signal rules:
+
+        2-minute Supertrend flips GREEN
+            -> BUY CE
+
+        2-minute Supertrend flips RED
+            -> BUY PE
+
+        Otherwise
+            -> WAIT
+    """
+
+    if df2 is None or df2.empty:
+        return "WAIT"
+
+    # Need enough candles for ATR + previous direction
+    if len(df2) < 22:
+        return "WAIT"
+
+    # Last completed candle
+    last = df2.iloc[-1]
+
+    if bool(last.get("ST_Flip_Green", False)):
+        return "BUY CE"
+
+    if bool(last.get("ST_Flip_Red", False)):
+        return "BUY PE"
+
+    return "WAIT"
+
+
+# ============================================================
+# OPTIONAL: GET CURRENT TREND
+# ============================================================
+
+def get_2min_trend(df2):
+    """
+    Returns:
+        GREEN
+        RED
+        WAIT
+    """
+
+    if df2 is None or df2.empty:
+        return "WAIT"
+
+    last = df2.iloc[-1]
+
+    if bool(last.get("ST_Green", False)):
+        return "GREEN"
+
+    if bool(last.get("ST_Red", False)):
+        return "RED"
+
+    return "WAIT"
+
+
+# ============================================================
+# OPTIONAL: GET COMPLETE STATUS
+# ============================================================
+
+def get_2min_status(df2):
+    """
+    Returns a dictionary containing the
+    latest 2-minute Supertrend status.
+    """
+
+    if df2 is None or df2.empty:
+        return {
+            "signal": "WAIT",
+            "trend": "WAIT",
+            "supertrend": None,
+            "close": None,
+            "datetime": None,
+        }
+
+    last = df2.iloc[-1]
+
+    if bool(last.get("ST_Flip_Green", False)):
+        signal = "BUY CE"
+    elif bool(last.get("ST_Flip_Red", False)):
+        signal = "BUY PE"
+    else:
+        signal = "WAIT"
+
+    if bool(last.get("ST_Green", False)):
+        trend = "GREEN"
+    elif bool(last.get("ST_Red", False)):
+        trend = "RED"
+    else:
+        trend = "WAIT"
+
+    return {
+        "signal": signal,
+        "trend": trend,
+        "supertrend": last.get("Supertrend"),
+        "close": last.get("close"),
+        "datetime": last.get("datetime"),
+    }
 
 # ============================================================
 # SIGNAL
