@@ -53,13 +53,13 @@ st.set_page_config(
 
 IST = ZoneInfo("Asia/Kolkata")
 
-ANGEL_API_KEY = os.getenv("ANGEL_API_KEY", "")
-ANGEL_CLIENT_ID = os.getenv("ANGEL_CLIENT_ID", "")
-ANGEL_PASSWORD = os.getenv("ANGEL_PASSWORD", "")
-ANGEL_TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET", "")
+API_KEY = os.getenv("ANGEL_API_KEY", "")
+CLIENT_CODE = os.getenv("ANGEL_CLIENT_ID", "")
+PIN = os.getenv("ANGEL_PASSWORD", "")
+TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET", "")
 
 # SAFE DEFAULT. No real broker order is sent.
-PAPER_TRADING = os.getenv("PAPER_TRADING", "true").strip().lower() in (
+PAPER_TRADING = os.getenv("PAPER_TRADING", "false").strip().lower() in (
     "1", "true", "yes", "y", "on"
 )
 
