@@ -491,7 +491,7 @@ def angel_login():
     # --------------------------------------------------------
     totp = pyotp.TOTP(secret).now()
 
-  try:
+    try:
 
         response = smart_api.generateSession(
             ANGEL_CLIENT_ID,
