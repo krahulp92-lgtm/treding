@@ -840,7 +840,7 @@ def supertrend(
 
     hl2 = (
         high + low
-    ) / 2.0
+    ) / 1.5
 
     basic_upper = (
         hl2
@@ -1123,7 +1123,7 @@ def calculate_2min_supertrend(
             drop=True
         ),
         period=20,
-        multiplier=2.0,
+        multiplier=1.5,
     )
 
 
