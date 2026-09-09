@@ -80,7 +80,7 @@ REFRESH_SECONDS = int(os.getenv("REFRESH_SECONDS", "10"))
 # true  = paper trading
 # false = real trading
 PAPER_TRADING = (
-    os.getenv("PAPER_TRADING", "true").strip().lower()
+    os.getenv("PAPER_TRADING", "false").strip().lower()
     in ("1", "true", "yes", "y", "on")
 )
 
