@@ -439,25 +439,25 @@ def credentials_ok():
 
     missing = []
 
-    if not API_KEY:
+    if not ANGEL_API_KEY:
 
         missing.append(
             "ANGEL_API_KEY"
         )
 
-    if not CLIENT_CODE:
+    if not ANGEL_CLIENT_ID:
 
         missing.append(
             "ANGEL_CLIENT_ID"
         )
 
-    if not PIN:
+    if not ANGEL_PASSWORD:
 
         missing.append(
             "ANGEL_PASSWORD"
         )
 
-    if not TOTP_SECRET:
+    if not ANGEL_TOTP_SECRET:
 
         missing.append(
             "ANGEL_TOTP_SECRET"
@@ -735,12 +735,12 @@ def angel_login():
         )
 
     api = SmartConnect(
-        api_key=API_KEY
+        api_key=ANGEL_API_KEY
     )
 
     response = api.generateSession(
-        CLIENT_CODE,
-        PIN,
+        ANGEL_CLIENT_CODE,
+        ANGEL_PASSWORD,
         totp
     )
 
