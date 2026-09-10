@@ -454,6 +454,28 @@ def angel_login():
             f"Angel One login failed: {exc}"
         )
 
+# ============================================================
+# INSTRUMENT MASTER CONFIG
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+INSTRUMENT_FILE = (
+    BASE_DIR / "OpenAPIScripMaster.json"
+)
+
+STATE_FILE = (
+    BASE_DIR / "nifty_2min_ce_state.json"
+)
+
+# Keep this as a fallback only.
+INSTRUMENT_URL = (
+    "https://margincalculator.angelone.com/"
+    "OpenAPI_File/files/OpenAPIScripMaster.json"
+)
+# ============================================================
+# INSTRUMENT MASTER
+# ============================================================
 
 # ============================================================
 # INSTRUMENT MASTER
@@ -461,6 +483,55 @@ def angel_login():
 
 @st.cache_data(ttl=3600)
 def download_instrument_master():
+
+    # ========================================================
+    # 1. LOCAL FILE FIRST
+    # ========================================================
+
+    if INSTRUMENT_FILE.exists():
+
+        try:
+
+            with open(
+                INSTRUMENT_FILE,
+                "r",
+                encoding="utf-8"
+            ) as f:
+
+                data = json.load(f)
+
+            if not isinstance(data, list):
+
+                raise RuntimeError(
+                    "OpenAPIScripMaster.json must contain "
+                    "a JSON list."
+                )
+
+            if len(data) == 0:
+
+                raise RuntimeError(
+                    "OpenAPIScripMaster.json is empty."
+                )
+
+            return data
+
+        except json.JSONDecodeError as exc:
+
+            raise RuntimeError(
+                "OpenAPIScripMaster.json is not valid JSON: "
+                + str(exc)
+            )
+
+        except Exception as exc:
+
+            raise RuntimeError(
+                "Could not read local instrument master: "
+                + str(exc)
+            )
+
+    # ========================================================
+    # 2. INTERNET FALLBACK
+    # ========================================================
 
     try:
 
@@ -473,46 +544,52 @@ def download_instrument_master():
 
         data = response.json()
 
-        if not isinstance(
-            data,
-            list
-        ):
+        if not isinstance(data, list):
 
             raise RuntimeError(
-                "Instrument master format "
-                "is invalid."
+                "Angel One instrument master "
+                "returned an invalid format."
             )
+
+        if not data:
+
+            raise RuntimeError(
+                "Angel One instrument master is empty."
+            )
+
+        # ----------------------------------------------------
+        # Save downloaded copy locally
+        # ----------------------------------------------------
+
+        try:
+
+            with open(
+                INSTRUMENT_FILE,
+                "w",
+                encoding="utf-8"
+            ) as f:
+
+                json.dump(
+                    data,
+                    f
+                )
+
+        except Exception:
+
+            pass
 
         return data
 
     except Exception as exc:
 
-        if INSTRUMENT_FILE.exists():
-
-            try:
-
-                with open(
-                    INSTRUMENT_FILE,
-                    "r",
-                    encoding="utf-8"
-                ) as f:
-
-                    data = json.load(f)
-
-                if isinstance(
-                    data,
-                    list
-                ):
-
-                    return data
-
-            except Exception:
-
-                pass
-
         raise RuntimeError(
-            "Instrument master download failed: "
-            + str(exc)
+            "Instrument master unavailable.\n\n"
+            "Could not download the Angel One "
+            "instrument master and the local file "
+            "OpenAPIScripMaster.json was not found.\n\n"
+            "Put the actual OpenAPIScripMaster.json "
+            "file in the same folder as dashboard.py.\n\n"
+            f"Network error: {exc}"
         )
 
 
