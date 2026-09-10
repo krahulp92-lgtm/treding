@@ -707,7 +707,7 @@ def angel_login():
         )
 
     secret = clean_secret(
-        TOTP_SECRET
+        ANGEL_TOTP_SECRET
     )
 
     try:
