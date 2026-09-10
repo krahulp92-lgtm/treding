@@ -739,7 +739,7 @@ def angel_login():
     )
 
     response = api.generateSession(
-        ANGEL_CLIENT_CODE,
+        ANGEL_CLIENT_ID,
         ANGEL_PASSWORD,
         totp
     )
