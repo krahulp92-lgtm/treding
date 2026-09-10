@@ -103,7 +103,7 @@ DURATION = "DAY"
 PAPER_TRADING = (
     os.getenv(
         "PAPER_TRADING",
-        "true"
+        "false"
     )
     .strip()
     .lower()
@@ -118,7 +118,7 @@ PAPER_TRADING = (
 BASE_DIR = Path(__file__).resolve().parent
 
 INSTRUMENT_FILE = (
-    BASE_DIR / "OpenAPIScripMaster.json"
+ "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json?utm_source=chatgpt.com"
 )
 
 STATE_FILE = (
