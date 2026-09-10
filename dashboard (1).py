@@ -112,7 +112,7 @@ PAPER_TRADING = (
         "PAPER_TRADING",
         "false"
     ).strip().lower()
-    == "false"
+    == "true"
 )
 
 
