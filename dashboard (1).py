@@ -7,46 +7,42 @@
 #
 # STRATEGY
 # ------------------------------------------------------------
-# 2-Minute Supertrend (20, 1.5)
-#
+# 1-minute candles
+#       ↓
+# 2-minute candles
+#       ↓
+# Supertrend (20, 1.5)
+#       ↓
 # GREEN = BUY CE
 # RED   = WAIT
 #
 # NO GREEN FLIP REQUIRED
 #
-# FLOW
-# ------------------------------------------------------------
-# NIFTY SPOT
-#     ↓
-# 1-Minute candles
-#     ↓
-# Resample to 2-Minute
-#     ↓
-# Supertrend (20, 1.5)
-#     ↓
 # GREEN
-#     ↓
-# Nearest NIFTY expiry
-#     ↓
-# ATM NIFTY CE
-#     ↓
-# Automatic BUY 1 LOT
-#     ↓
-# Verify in Angel One Order Book
+#   ↓
+# Select nearest NIFTY expiry
+#   ↓
+# Select ATM NIFTY CE
+#   ↓
+# Automatically BUY 1 LOT
+#   ↓
+# Verify Order Book
 #
-# IMPORTANT
-# ------------------------------------------------------------
+# IMPORTANT:
 # PAPER_TRADING=true  -> NO REAL ORDER
-# PAPER_TRADING=false -> REAL ORDER
+# PAPER_TRADING=false -> REAL ANGEL ONE ORDER
 #
-# Default = PAPER TRADING
+# Required local file:
+# OpenAPIScripMaster.json
+#
+# Put it in the SAME folder as dashboard.py
 # ============================================================
 
 import os
 import json
 import time
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 
 import requests
@@ -59,13 +55,24 @@ from SmartApi import SmartConnect
 
 
 # ============================================================
+# PAGE CONFIG
+# ============================================================
+
+st.set_page_config(
+    page_title="NIFTY Automatic CE",
+    page_icon="📈",
+    layout="wide",
+)
+
+
+# ============================================================
 # CONFIG
 # ============================================================
 
 IST = ZoneInfo("Asia/Kolkata")
 
 NIFTY_TOKEN = "99926000"
-NIFTY_SYMBOL = "NIFTY 50"
+NIFTY_SYMBOL = "NIFTY"
 
 SUPERTREND_PERIOD = 20
 SUPERTREND_MULTIPLIER = 1.5
@@ -74,147 +81,53 @@ LOTS = 1
 
 REFRESH_SECONDS = 20
 
-# Use a short enough candle history for repeated refreshes.
-CANDLE_DAYS = 2
+CANDLE_DAYS = 3
 
-# Angel One instrument master
-INSTRUMENT_URL = (
-    "https://margincalculator.angelone.com/"
-    "OpenAPI_File/files/OpenAPIScripMaster.json"
-)
+ORDER_TYPE = "MARKET"
+PRODUCT_TYPE = "INTRADAY"
+DURATION = "DAY"
 
-INSTRUMENT_FILE = Path(
-    "OpenAPIScripMaster.json"
-)
+# ------------------------------------------------------------
+# SAFETY
+# ------------------------------------------------------------
 
-STATE_FILE = Path(
-    "nifty_2min_ce_state.json"
-)
-
-
-# ============================================================
-# PAPER / LIVE MODE
-# ============================================================
-#
-# IMPORTANT:
+# DEFAULT = PAPER
 #
 # PAPER_TRADING=true
-#     -> no real broker order
+#       No broker order is sent.
 #
 # PAPER_TRADING=false
-#     -> REAL BUY ORDER
-#
-# Default is TRUE for safety.
-# ============================================================
+#       Real order can be sent.
+# ------------------------------------------------------------
 
 PAPER_TRADING = (
     os.getenv(
         "PAPER_TRADING",
-        "false"
-    ).strip().lower()
+        "true"
+    )
+    .strip()
+    .lower()
     == "true"
 )
 
 
 # ============================================================
-# PAGE
+# FILE PATHS
 # ============================================================
 
-st.set_page_config(
-    page_title="NIFTY 2-Minute CE Auto Trader",
-    page_icon="📈",
-    layout="wide",
+BASE_DIR = Path(__file__).resolve().parent
+
+INSTRUMENT_FILE = (
+    BASE_DIR / "OpenAPIScripMaster.json"
+)
+
+STATE_FILE = (
+    BASE_DIR / "nifty_2min_ce_state.json"
 )
 
 
 # ============================================================
-# SESSION STATE
-# ============================================================
-
-DEFAULTS = {
-
-    "api": None,
-
-    "login_status":
-        "NOT CONNECTED",
-
-    "last_error":
-        "",
-
-    "last_message":
-        "Ready",
-
-    "instruments":
-        None,
-
-    "spot":
-        None,
-
-    "candles_2m":
-        None,
-
-    "supertrend_df":
-        None,
-
-    "st_value":
-        None,
-
-    "st_green":
-        False,
-
-    "signal":
-        "WAIT",
-
-    "signal_time":
-        None,
-
-    "selected_option":
-        None,
-
-    "last_order_id":
-        None,
-
-    "last_order_time":
-        None,
-
-    "last_order_candle":
-        None,
-
-    # --------------------------------------------------------
-    # Important safety lock
-    #
-    # If an order was sent but Angel response/order book
-    # cannot confirm it, this becomes TRUE.
-    #
-    # No automatic retry will occur.
-    # --------------------------------------------------------
-
-    "order_status_unknown":
-        False,
-
-    "order_attempted_candle":
-        None,
-
-    "paper_orders":
-        [],
-
-    "last_refresh":
-        None,
-
-    "state_loaded":
-        False,
-}
-
-
-for key, value in DEFAULTS.items():
-
-    if key not in st.session_state:
-
-        st.session_state[key] = value
-
-
-# ============================================================
-# CREDENTIALS
+# ANGEL ONE CREDENTIALS
 # ============================================================
 
 ANGEL_API_KEY = os.getenv(
@@ -239,38 +152,101 @@ ANGEL_TOTP_SECRET = os.getenv(
 
 
 # ============================================================
+# SESSION DEFAULTS
+# ============================================================
+
+DEFAULTS = {
+    "api": None,
+    "running": True,
+    "login_status": False,
+    "last_error": "",
+    "nifty_ltp": None,
+    "signal": "WAIT",
+    "supertrend": None,
+    "st_direction": None,
+    "last_candle_time": None,
+    "atm_symbol": "",
+    "atm_token": "",
+    "atm_strike": None,
+    "atm_expiry": "",
+    "atm_lot_size": 0,
+    "atm_ltp": None,
+    "last_order_id": "",
+    "last_order_symbol": "",
+    "order_status": "",
+    "order_status_unknown": False,
+}
+
+for key, value in DEFAULTS.items():
+
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# ============================================================
 # UTILITY
 # ============================================================
 
 def now_ist():
-
     return datetime.now(IST)
 
 
-def log_error(message):
+def is_market_open():
 
-    st.session_state[
-        "last_error"
-    ] = str(message)
+    now = now_ist()
+
+    if now.weekday() >= 5:
+        return False
+
+    market_start = dt_time(
+        9,
+        15
+    )
+
+    market_end = dt_time(
+        15,
+        30
+    )
+
+    return (
+        market_start
+        <= now.time()
+        <= market_end
+    )
+
+
+def safe_float(value, default=None):
+
+    try:
+
+        if value is None:
+            return default
+
+        return float(value)
+
+    except Exception:
+
+        return default
 
 
 # ============================================================
 # TOTP
 # ============================================================
 
-def get_totp_secret(raw_secret):
+def get_totp():
 
-    raw_secret = str(
-        raw_secret
-    ).strip()
+    secret = ANGEL_TOTP_SECRET.strip()
 
-    if not raw_secret:
-
+    if not secret:
         raise RuntimeError(
             "ANGEL_TOTP_SECRET is empty."
         )
 
-    if raw_secret.lower().startswith(
+    # --------------------------------------------------------
+    # If an otpauth URI was supplied, extract secret.
+    # --------------------------------------------------------
+
+    if secret.lower().startswith(
         "otpauth://"
     ):
 
@@ -278,319 +254,186 @@ def get_totp_secret(raw_secret):
 
             from urllib.parse import (
                 urlparse,
-                parse_qs,
+                parse_qs
             )
 
-            parsed = urlparse(
-                raw_secret
-            )
+            parsed = urlparse(secret)
 
-            query = parse_qs(
+            params = parse_qs(
                 parsed.query
             )
 
-            secret = query.get(
+            secret = params.get(
                 "secret",
                 [""]
             )[0]
 
-            if not secret:
-
-                raise RuntimeError(
-                    "TOTP secret missing from "
-                    "otpauth URI."
-                )
-
-            raw_secret = secret
-
         except Exception as exc:
 
             raise RuntimeError(
-                f"Invalid TOTP URI: {exc}"
+                "Could not read TOTP secret: "
+                + str(exc)
             )
 
-    raw_secret = (
-        raw_secret
+    secret = (
+        secret
         .replace(" ", "")
         .replace("-", "")
-        .strip()
         .upper()
     )
 
+    # --------------------------------------------------------
+    # Do not accidentally use the 6-digit OTP.
+    # --------------------------------------------------------
+
     if (
-        raw_secret.isdigit()
-        and len(raw_secret) == 6
+        len(secret) == 6
+        and secret.isdigit()
     ):
 
         raise RuntimeError(
-            "ANGEL_TOTP_SECRET contains the "
-            "6-digit OTP. Use the Base32 TOTP "
-            "secret instead."
+            "ANGEL_TOTP_SECRET contains a "
+            "6-digit OTP.\n\n"
+            "Use the actual Base32 TOTP secret, "
+            "not the current 6-digit code."
         )
-
-    return raw_secret
-
-
-def generate_totp():
-
-    secret = get_totp_secret(
-        ANGEL_TOTP_SECRET
-    )
 
     try:
 
-        return pyotp.TOTP(
-            secret
-        ).now()
+        return pyotp.TOTP(secret).now()
 
     except Exception as exc:
 
         raise RuntimeError(
-            f"Unable to generate TOTP: {exc}"
+            "Invalid TOTP secret: "
+            + str(exc)
         )
 
 
 # ============================================================
-# CREDENTIAL CHECK
+# ANGEL LOGIN
 # ============================================================
 
-def credentials_ok():
-
-    missing = []
+def login_angel():
 
     if not ANGEL_API_KEY:
-
-        missing.append(
-            "ANGEL_API_KEY"
+        raise RuntimeError(
+            "ANGEL_API_KEY is missing."
         )
 
     if not ANGEL_CLIENT_ID:
-
-        missing.append(
-            "ANGEL_CLIENT_ID"
+        raise RuntimeError(
+            "ANGEL_CLIENT_ID is missing."
         )
 
     if not ANGEL_PASSWORD:
-
-        missing.append(
-            "ANGEL_PASSWORD"
+        raise RuntimeError(
+            "ANGEL_PASSWORD is missing."
         )
 
     if not ANGEL_TOTP_SECRET:
-
-        missing.append(
-            "ANGEL_TOTP_SECRET"
+        raise RuntimeError(
+            "ANGEL_TOTP_SECRET is missing."
         )
 
-    if missing:
+    totp = get_totp()
+
+    api = SmartConnect(
+        api_key=ANGEL_API_KEY
+    )
+
+    response = api.generateSession(
+        ANGEL_CLIENT_ID,
+        ANGEL_PASSWORD,
+        totp
+    )
+
+    if not response:
 
         raise RuntimeError(
-            "Missing environment variables: "
-            + ", ".join(missing)
+            "Angel One login returned empty response."
         )
 
+    if not response.get("status"):
+
+        raise RuntimeError(
+            "Angel One login failed:\n"
+            + str(response)
+        )
+
+    if not response.get("data"):
+
+        raise RuntimeError(
+            "Angel One login returned no session data."
+        )
+
+    if not response["data"].get(
+        "jwtToken"
+    ):
+
+        raise RuntimeError(
+            "Angel One login returned no jwtToken."
+        )
+
+    return api
+
 
 # ============================================================
-# ANGEL ONE LOGIN
+# LOCAL INSTRUMENT MASTER
 # ============================================================
 
-def angel_login():
+def load_instrument_master():
 
-    credentials_ok()
+    if not INSTRUMENT_FILE.exists():
+
+        raise RuntimeError(
+            "OpenAPIScripMaster.json NOT FOUND.\n\n"
+            "Expected location:\n"
+            f"{INSTRUMENT_FILE}\n\n"
+            "Download the actual Angel One "
+            "instrument master and place it "
+            "beside dashboard.py."
+        )
 
     try:
 
-        api = SmartConnect(
-            api_key=ANGEL_API_KEY
-        )
+        with open(
+            INSTRUMENT_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
 
-        totp = generate_totp()
+            data = json.load(f)
 
-        response = api.generateSession(
-            ANGEL_CLIENT_ID,
-            ANGEL_PASSWORD,
-            totp
-        )
-
-        if not response:
-
-            raise RuntimeError(
-                "Angel One returned empty "
-                "login response."
-            )
-
-        if response.get(
-            "status"
-        ) is False:
-
-            raise RuntimeError(
-                "Angel One login failed: "
-                + str(response)
-            )
-
-        st.session_state[
-            "api"
-        ] = api
-
-        st.session_state[
-            "login_status"
-        ] = "CONNECTED"
-
-        st.session_state[
-            "last_message"
-        ] = (
-            "Angel One login successful."
-        )
-
-        return api
-
-    except Exception as exc:
-
-        st.session_state[
-            "login_status"
-        ] = "LOGIN FAILED"
+    except json.JSONDecodeError as exc:
 
         raise RuntimeError(
-            f"Angel One login failed: {exc}"
+            "OpenAPIScripMaster.json contains "
+            "invalid JSON:\n"
+            + str(exc)
         )
-
-# ============================================================
-# INSTRUMENT MASTER CONFIG
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-
-INSTRUMENT_FILE = (
-    BASE_DIR / "OpenAPIScripMaster.json"
-)
-
-STATE_FILE = (
-    BASE_DIR / "nifty_2min_ce_state.json"
-)
-
-# Keep this as a fallback only.
-INSTRUMENT_URL = (
-    "https://margincalculator.angelone.com/"
-    "OpenAPI_File/files/OpenAPIScripMaster.json"
-)
-# ============================================================
-# INSTRUMENT MASTER
-# ============================================================
-
-# ============================================================
-# INSTRUMENT MASTER
-# ============================================================
-
-@st.cache_data(ttl=3600)
-def download_instrument_master():
-
-    # ========================================================
-    # 1. LOCAL FILE FIRST
-    # ========================================================
-
-    if INSTRUMENT_FILE.exists():
-
-        try:
-
-            with open(
-                INSTRUMENT_FILE,
-                "r",
-                encoding="utf-8"
-            ) as f:
-
-                data = json.load(f)
-
-            if not isinstance(data, list):
-
-                raise RuntimeError(
-                    "OpenAPIScripMaster.json must contain "
-                    "a JSON list."
-                )
-
-            if len(data) == 0:
-
-                raise RuntimeError(
-                    "OpenAPIScripMaster.json is empty."
-                )
-
-            return data
-
-        except json.JSONDecodeError as exc:
-
-            raise RuntimeError(
-                "OpenAPIScripMaster.json is not valid JSON: "
-                + str(exc)
-            )
-
-        except Exception as exc:
-
-            raise RuntimeError(
-                "Could not read local instrument master: "
-                + str(exc)
-            )
-
-    # ========================================================
-    # 2. INTERNET FALLBACK
-    # ========================================================
-
-    try:
-
-        response = requests.get(
-            INSTRUMENT_URL,
-            timeout=30
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        if not isinstance(data, list):
-
-            raise RuntimeError(
-                "Angel One instrument master "
-                "returned an invalid format."
-            )
-
-        if not data:
-
-            raise RuntimeError(
-                "Angel One instrument master is empty."
-            )
-
-        # ----------------------------------------------------
-        # Save downloaded copy locally
-        # ----------------------------------------------------
-
-        try:
-
-            with open(
-                INSTRUMENT_FILE,
-                "w",
-                encoding="utf-8"
-            ) as f:
-
-                json.dump(
-                    data,
-                    f
-                )
-
-        except Exception:
-
-            pass
-
-        return data
 
     except Exception as exc:
 
         raise RuntimeError(
-            "Instrument master unavailable.\n\n"
-            "Could not download the Angel One "
-            "instrument master and the local file "
-            "OpenAPIScripMaster.json was not found.\n\n"
-            "Put the actual OpenAPIScripMaster.json "
-            "file in the same folder as dashboard.py.\n\n"
-            f"Network error: {exc}"
+            "Cannot read OpenAPIScripMaster.json:\n"
+            + str(exc)
         )
+
+    if not isinstance(data, list):
+
+        raise RuntimeError(
+            "OpenAPIScripMaster.json must contain "
+            "a JSON list."
+        )
+
+    if not data:
+
+        raise RuntimeError(
+            "OpenAPIScripMaster.json is empty."
+        )
+
+    return data
 
 
 # ============================================================
@@ -599,268 +442,249 @@ def download_instrument_master():
 
 def get_nifty_ltp(api):
 
-    if api is None:
-
-        raise RuntimeError(
-            "Angel One API is not connected."
-        )
-
-    try:
-
-        response = api.ltpData(
-            "NSE",
-            NIFTY_SYMBOL,
-            NIFTY_TOKEN
-        )
-
-        if not response:
-
-            raise RuntimeError(
-                "NIFTY LTP returned "
-                "empty response."
-            )
-
-        if response.get(
-            "status"
-        ) is False:
-
-            raise RuntimeError(
-                "NIFTY LTP failed: "
-                + str(response)
-            )
-
-        data = response.get(
-            "data"
-        )
-
-        if not isinstance(
-            data,
-            dict
-        ):
-
-            raise RuntimeError(
-                "NIFTY LTP response "
-                "contains no data."
-            )
-
-        ltp = data.get(
-            "ltp"
-        )
-
-        if ltp is None:
-
-            raise RuntimeError(
-                "NIFTY LTP missing."
-            )
-
-        return float(ltp)
-
-    except Exception as exc:
-
-        raise RuntimeError(
-            f"NIFTY LTP FAILED: {exc}"
-        )
-
-
-# ============================================================
-# CANDLE API
-# ============================================================
-
-def get_nifty_1m_candles(
-    api,
-    days=CANDLE_DAYS
-):
-
-    if api is None:
-
-        raise RuntimeError(
-            "Angel One API is not connected."
-        )
-
-    end_time = now_ist()
-
-    start_time = (
-        end_time
-        - timedelta(days=days)
+    response = api.ltpData(
+        "NSE",
+        NIFTY_SYMBOL,
+        NIFTY_TOKEN
     )
 
-    params = {
-
-        "exchange":
-            "NSE",
-
-        "symboltoken":
-            NIFTY_TOKEN,
-
-        "interval":
-            "ONE_MINUTE",
-
-        "fromdate":
-            start_time.strftime(
-                "%Y-%m-%d %H:%M"
-            ),
-
-        "todate":
-            end_time.strftime(
-                "%Y-%m-%d %H:%M"
-            ),
-    }
-
-    try:
-
-        response = api.getCandleData(
-            params
-        )
-
-        if not response:
-
-            raise RuntimeError(
-                "Candle API returned "
-                "empty response."
-            )
-
-        if response.get(
-            "status"
-        ) is False:
-
-            raise RuntimeError(
-                "Candle API failed: "
-                + str(response)
-            )
-
-        data = response.get(
-            "data"
-        )
-
-        if not data:
-
-            raise RuntimeError(
-                "Candle API returned "
-                "no candle data."
-            )
-
-        rows = []
-
-        for row in data:
-
-            if len(row) < 6:
-
-                continue
-
-            try:
-
-                rows.append({
-
-                    "datetime":
-                        row[0],
-
-                    "open":
-                        float(row[1]),
-
-                    "high":
-                        float(row[2]),
-
-                    "low":
-                        float(row[3]),
-
-                    "close":
-                        float(row[4]),
-
-                    "volume":
-                        float(row[5]),
-                })
-
-            except Exception:
-
-                continue
-
-        df = pd.DataFrame(
-            rows
-        )
-
-        if df.empty:
-
-            raise RuntimeError(
-                "No valid NIFTY candles received."
-            )
-
-        df["datetime"] = pd.to_datetime(
-            df["datetime"],
-            errors="coerce"
-        )
-
-        if df["datetime"].dt.tz is None:
-
-            df["datetime"] = (
-                df["datetime"]
-                .dt.tz_localize(IST)
-            )
-
-        else:
-
-            df["datetime"] = (
-                df["datetime"]
-                .dt.tz_convert(IST)
-            )
-
-        df = df.dropna(
-            subset=["datetime"]
-        )
-
-        df = df.sort_values(
-            "datetime"
-        )
-
-        df = df.drop_duplicates(
-            "datetime"
-        )
-
-        # ----------------------------------------------------
-        # NSE regular market only
-        # ----------------------------------------------------
-
-        df = df[
-            (
-                df.index
-                if False
-                else pd.Series(
-                    df["datetime"]
-                    .dt.time,
-                    index=df.index
-                )
-            )
-            .notna()
-        ]
-
-        return df.set_index(
-            "datetime"
-        )
-
-    except Exception as exc:
+    if not response:
 
         raise RuntimeError(
-            f"Candle API failed: {exc}"
+            "NIFTY LTP returned empty response."
         )
+
+    if not response.get("status"):
+
+        raise RuntimeError(
+            "NIFTY LTP FAILED | "
+            f"message={response.get('message')} | "
+            f"errorcode={response.get('errorcode')}"
+        )
+
+    data = response.get("data")
+
+    if not data:
+
+        raise RuntimeError(
+            "NIFTY LTP response has no data."
+        )
+
+    ltp = safe_float(
+        data.get("ltp")
+    )
+
+    if ltp is None:
+
+        raise RuntimeError(
+            "NIFTY LTP is invalid:\n"
+            + str(data)
+        )
+
+    return ltp
 
 
 # ============================================================
-# RESAMPLE 1-MINUTE → 2-MINUTE
+# ANGEL CANDLE DATA
+# ============================================================
+
+def get_nifty_1m_candles(api):
+
+    now = now_ist()
+
+    from_dt = (
+        now
+        - timedelta(
+            days=CANDLE_DAYS
+        )
+    )
+
+    to_dt = now
+
+    params = {
+        "exchange": "NSE",
+        "symboltoken": NIFTY_TOKEN,
+        "interval": "ONE_MINUTE",
+        "fromdate": from_dt.strftime(
+            "%Y-%m-%d %H:%M"
+        ),
+        "todate": to_dt.strftime(
+            "%Y-%m-%d %H:%M"
+        ),
+    }
+
+    response = api.getCandleData(
+        params
+    )
+
+    if not response:
+
+        raise RuntimeError(
+            "Candle API returned empty response."
+        )
+
+    if not response.get("status"):
+
+        raise RuntimeError(
+            "Candle API FAILED:\n"
+            + str(response)
+        )
+
+    rows = response.get("data")
+
+    if not rows:
+
+        raise RuntimeError(
+            "Candle API returned no candles."
+        )
+
+    df = pd.DataFrame(
+        rows
+    )
+
+    if df.empty:
+
+        raise RuntimeError(
+            "Candle dataframe is empty."
+        )
+
+    # Angel format normally:
+    #
+    # datetime, open, high, low, close, volume
+    #
+    if df.shape[1] < 5:
+
+        raise RuntimeError(
+            "Unexpected candle response."
+        )
+
+    df = df.iloc[:, :6].copy()
+
+    columns = [
+        "datetime",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    ]
+
+    df.columns = columns[:df.shape[1]]
+
+    df["datetime"] = pd.to_datetime(
+        df["datetime"],
+        errors="coerce"
+    )
+
+    # --------------------------------------------------------
+    # Convert to IST
+    # --------------------------------------------------------
+
+    if df["datetime"].dt.tz is None:
+
+        df["datetime"] = (
+            df["datetime"]
+            .dt.tz_localize(
+                IST
+            )
+        )
+
+    else:
+
+        df["datetime"] = (
+            df["datetime"]
+            .dt.tz_convert(
+                IST
+            )
+        )
+
+    for column in [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    ]:
+
+        if column in df.columns:
+
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce"
+            )
+
+    df = df.dropna(
+        subset=[
+            "datetime",
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
+    )
+
+    df = df.sort_values(
+        "datetime"
+    )
+
+    df = df.drop_duplicates(
+        subset=["datetime"],
+        keep="last"
+    )
+
+    # --------------------------------------------------------
+    # Remove current forming 1-minute candle
+    # --------------------------------------------------------
+
+    current_minute = now.replace(
+        second=0,
+        microsecond=0
+    )
+
+    df = df[
+        df["datetime"]
+        < current_minute
+    ]
+
+    # --------------------------------------------------------
+    # NSE market hours
+    # --------------------------------------------------------
+
+    df = df[
+        (
+            df["datetime"].dt.time
+            >= dt_time(9, 15)
+        )
+        &
+        (
+            df["datetime"].dt.time
+            <= dt_time(15, 30)
+        )
+    ]
+
+    if df.empty:
+
+        raise RuntimeError(
+            "No completed NSE 1-minute candles."
+        )
+
+    return df
+
+
+# ============================================================
+# RESAMPLE 1 MINUTE -> 2 MINUTE
 # ============================================================
 
 def resample_to_2min(df):
 
-    if (
-        df is None
-        or df.empty
-    ):
+    temp = df.copy()
 
-        raise RuntimeError(
-            "1-minute candle dataframe "
-            "is empty."
-        )
+    temp = temp.set_index(
+        "datetime"
+    )
 
     result = (
-        df[
+        temp[
             [
                 "open",
                 "high",
@@ -874,96 +698,56 @@ def resample_to_2min(df):
             origin="start_day",
             offset="9h15min",
             label="right",
-            closed="left"
+            closed="left",
         )
-        .agg({
-
-            "open":
-                "first",
-
-            "high":
-                "max",
-
-            "low":
-                "min",
-
-            "close":
-                "last",
-
-            "volume":
-                "sum",
-        })
-        .dropna()
+        .agg(
+            {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+        )
     )
 
-    # Only regular NSE session
+    result = result.dropna(
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
+    )
+
+    # --------------------------------------------------------
+    # Only completed 2-minute candles
+    # --------------------------------------------------------
+
+    current = now_ist()
+
     result = result[
-        (
-            result.index.hour > 9
-        )
-        |
-        (
-            (
-                result.index.hour == 9
-            )
-            &
-            (
-                result.index.minute >= 17
-            )
-        )
+        result.index
+        <= current
     ]
+
+    # --------------------------------------------------------
+    # Keep NSE session
+    # --------------------------------------------------------
 
     result = result[
         (
-            result.index.hour < 15
+            result.index.time
+            >= dt_time(9, 17)
         )
-        |
+        &
         (
-            (
-                result.index.hour == 15
-            )
-            &
-            (
-                result.index.minute <= 30
-            )
+            result.index.time
+            <= dt_time(15, 30)
         )
     ]
 
     return result
-
-
-# ============================================================
-# LAST CLOSED 2-MINUTE CANDLE
-# ============================================================
-
-def get_closed_2min_dataframe(df):
-
-    if (
-        df is None
-        or df.empty
-    ):
-
-        return pd.DataFrame()
-
-    current = now_ist()
-
-    # Resampled candles are labelled on the RIGHT.
-    #
-    # 09:15-09:17 -> 09:17
-    # 09:17-09:19 -> 09:19
-    #
-    # Therefore a candle with timestamp <= current
-    # is closed.
-
-    closed = df[
-        df.index <= current
-    ].copy()
-
-    if closed.empty:
-
-        return pd.DataFrame()
-
-    return closed
 
 
 # ============================================================
@@ -978,47 +762,52 @@ def calculate_supertrend(
 
     data = df.copy()
 
-    if len(data) < (
-        period + 5
-    ):
-
-        raise RuntimeError(
-            f"Not enough 2-minute candles "
-            f"for Supertrend "
-            f"{period},{multiplier}."
-        )
-
     high = data["high"]
     low = data["low"]
     close = data["close"]
+
+    # --------------------------------------------------------
+    # True Range
+    # --------------------------------------------------------
 
     previous_close = close.shift(1)
 
     tr1 = high - low
 
     tr2 = (
-        high - previous_close
+        high
+        - previous_close
     ).abs()
 
     tr3 = (
-        low - previous_close
+        low
+        - previous_close
     ).abs()
 
-    tr = pd.concat(
+    true_range = pd.concat(
         [
             tr1,
             tr2,
             tr3,
         ],
         axis=1
-    ).max(axis=1)
+    ).max(
+        axis=1
+    )
 
-    # Wilder-style ATR
-    atr = tr.ewm(
-        alpha=1 / period,
-        adjust=False,
-        min_periods=period
-    ).mean()
+    # --------------------------------------------------------
+    # Wilder ATR
+    # --------------------------------------------------------
+
+    atr = (
+        true_range
+        .ewm(
+            alpha=1 / period,
+            adjust=False,
+            min_periods=period,
+        )
+        .mean()
+    )
 
     hl2 = (
         high + low
@@ -1037,28 +826,36 @@ def calculate_supertrend(
     final_upper = pd.Series(
         np.nan,
         index=data.index,
-        dtype=float
+        dtype=float,
     )
 
     final_lower = pd.Series(
         np.nan,
         index=data.index,
-        dtype=float
-    )
-
-    supertrend = pd.Series(
-        np.nan,
-        index=data.index,
-        dtype=float
+        dtype=float,
     )
 
     direction = pd.Series(
         np.nan,
         index=data.index,
-        dtype=float
+        dtype=float,
     )
 
+    supertrend = pd.Series(
+        np.nan,
+        index=data.index,
+        dtype=float,
+    )
+
+    # --------------------------------------------------------
+    # Calculate bands and direction
+    # --------------------------------------------------------
+
     for i in range(len(data)):
+
+        if pd.isna(atr.iloc[i]):
+
+            continue
 
         if i == 0:
 
@@ -1072,174 +869,127 @@ def calculate_supertrend(
 
             continue
 
-        bu = basic_upper.iloc[i]
-        bl = basic_lower.iloc[i]
-
-        prev_fu = (
+        previous_final_upper = (
             final_upper.iloc[i - 1]
         )
 
-        prev_fl = (
+        previous_final_lower = (
             final_lower.iloc[i - 1]
         )
 
-        prev_close_value = (
+        previous_close_value = (
             close.iloc[i - 1]
         )
 
-        # -----------------------------------------------
-        # Final Upper Band
-        # -----------------------------------------------
+        # ----------------------------------------------------
+        # Final upper band
+        # ----------------------------------------------------
 
-        if pd.isna(bu):
+        if (
+            pd.isna(previous_final_upper)
+            or
+            basic_upper.iloc[i]
+            < previous_final_upper
+            or
+            previous_close_value
+            > previous_final_upper
+        ):
 
             final_upper.iloc[i] = (
-                prev_fu
+                basic_upper.iloc[i]
             )
-
-        elif (
-            pd.isna(prev_fu)
-            or bu < prev_fu
-            or prev_close_value > prev_fu
-        ):
-
-            final_upper.iloc[i] = bu
 
         else:
 
-            final_upper.iloc[i] = prev_fu
+            final_upper.iloc[i] = (
+                previous_final_upper
+            )
 
-        # -----------------------------------------------
-        # Final Lower Band
-        # -----------------------------------------------
+        # ----------------------------------------------------
+        # Final lower band
+        # ----------------------------------------------------
 
-        if pd.isna(bl):
+        if (
+            pd.isna(previous_final_lower)
+            or
+            basic_lower.iloc[i]
+            > previous_final_lower
+            or
+            previous_close_value
+            < previous_final_lower
+        ):
 
             final_lower.iloc[i] = (
-                prev_fl
+                basic_lower.iloc[i]
             )
-
-        elif (
-            pd.isna(prev_fl)
-            or bl > prev_fl
-            or prev_close_value < prev_fl
-        ):
-
-            final_lower.iloc[i] = bl
 
         else:
 
-            final_lower.iloc[i] = prev_fl
+            final_lower.iloc[i] = (
+                previous_final_lower
+            )
 
-        # -----------------------------------------------
-        # Direction / Supertrend
-        # -----------------------------------------------
+        # ----------------------------------------------------
+        # Direction
+        # ----------------------------------------------------
 
-        if pd.isna(
-            atr.iloc[i]
-        ):
-
-            continue
-
-        if pd.isna(
-            supertrend.iloc[i - 1]
-        ):
-
-            # Initial direction
-            if (
-                close.iloc[i]
-                <= final_upper.iloc[i]
-            ):
-
-                direction.iloc[i] = -1
-
-                supertrend.iloc[i] = (
-                    final_upper.iloc[i]
-                )
-
-            else:
-
-                direction.iloc[i] = 1
-
-                supertrend.iloc[i] = (
-                    final_lower.iloc[i]
-                )
-
-            continue
-
-        previous_direction = (
+        if i == 0 or pd.isna(
             direction.iloc[i - 1]
-        )
+        ):
 
-        # Previous trend RED
-        if previous_direction == -1:
+            direction.iloc[i] = 1
+
+        else:
+
+            previous_direction = (
+                direction.iloc[i - 1]
+            )
 
             if (
-                close.iloc[i]
+                previous_direction == -1
+                and close.iloc[i]
                 > final_upper.iloc[i]
             ):
 
                 direction.iloc[i] = 1
 
-                supertrend.iloc[i] = (
-                    final_lower.iloc[i]
-                )
-
-            else:
-
-                direction.iloc[i] = -1
-
-                supertrend.iloc[i] = (
-                    final_upper.iloc[i]
-                )
-
-        # Previous trend GREEN
-        else:
-
-            if (
-                close.iloc[i]
+            elif (
+                previous_direction == 1
+                and close.iloc[i]
                 < final_lower.iloc[i]
             ):
 
                 direction.iloc[i] = -1
 
-                supertrend.iloc[i] = (
-                    final_upper.iloc[i]
-                )
-
             else:
 
-                direction.iloc[i] = 1
-
-                supertrend.iloc[i] = (
-                    final_lower.iloc[i]
+                direction.iloc[i] = (
+                    previous_direction
                 )
 
+        # ----------------------------------------------------
+        # Supertrend
+        # ----------------------------------------------------
+
+        if direction.iloc[i] == 1:
+
+            supertrend.iloc[i] = (
+                final_lower.iloc[i]
+            )
+
+        else:
+
+            supertrend.iloc[i] = (
+                final_upper.iloc[i]
+            )
+
     data["ATR"] = atr
-
-    data["Basic_Upper"] = (
-        basic_upper
-    )
-
-    data["Basic_Lower"] = (
-        basic_lower
-    )
-
-    data["Final_Upper"] = (
-        final_upper
-    )
-
-    data["Final_Lower"] = (
-        final_lower
-    )
-
-    data["Supertrend"] = (
-        supertrend
-    )
-
-    data["ST_Direction"] = (
-        direction
-    )
+    data["Basic_Upper"] = basic_upper
+    data["Basic_Lower"] = basic_lower
+    data["Final_Upper"] = final_upper
+    data["Final_Lower"] = final_lower
+    data["Supertrend"] = supertrend
+    data["ST_Direction"] = direction
 
     data["ST_Green"] = (
         direction == 1
@@ -1265,84 +1015,40 @@ def calculate_supertrend(
 
 
 # ============================================================
-# SELECT ATM NIFTY CE
+# ATM CE SELECTION
 # ============================================================
 
 def select_atm_nifty_ce(
-    instruments,
     spot
 ):
 
-    if not instruments:
+    records = load_instrument_master()
+
+    df = pd.DataFrame(
+        records
+    )
+
+    if df.empty:
 
         raise RuntimeError(
             "Instrument master is empty."
         )
 
-    if spot is None:
-
-        raise RuntimeError(
-            "NIFTY spot price unavailable."
-        )
-
-    df = pd.DataFrame(
-        instruments
-    ).copy()
-
-    if df.empty:
-
-        raise RuntimeError(
-            "Instrument master dataframe "
-            "is empty."
-        )
+    # --------------------------------------------------------
+    # Normalize column names
+    # --------------------------------------------------------
 
     df.columns = [
-        str(c)
-        .strip()
-        .lower()
+        str(c).strip().lower()
         for c in df.columns
     ]
 
-    rename_map = {}
-
-    if (
-        "token" in df.columns
-        and "symboltoken"
-        not in df.columns
-    ):
-
-        rename_map[
-            "token"
-        ] = "symboltoken"
-
-    if (
-        "symbol" in df.columns
-        and "tradingsymbol"
-        not in df.columns
-    ):
-
-        rename_map[
-            "symbol"
-        ] = "tradingsymbol"
-
-    df = df.rename(
-        columns=rename_map
-    )
-
     required = [
-
-        "symboltoken",
-
-        "tradingsymbol",
-
+        "token",
+        "symbol",
         "expiry",
-
         "strike",
-
         "lotsize",
-
-        "instrumenttype",
-
         "exch_seg",
     ]
 
@@ -1355,68 +1061,160 @@ def select_atm_nifty_ce(
     if missing:
 
         raise RuntimeError(
-            "Instrument master missing "
-            "columns: "
+            "Instrument master is missing columns:\n"
             + ", ".join(missing)
         )
 
     # --------------------------------------------------------
-    # NFO
+    # Exchange
     # --------------------------------------------------------
 
-    df = df[
+    df["exch_seg"] = (
         df["exch_seg"]
         .astype(str)
         .str.upper()
-        .eq("NFO")
-    ].copy()
-
-    # --------------------------------------------------------
-    # OPTIDX
-    # --------------------------------------------------------
+        .str.strip()
+    )
 
     df = df[
-        df["instrumenttype"]
-        .astype(str)
-        .str.upper()
-        .eq("OPTIDX")
-    ].copy()
+        df["exch_seg"] == "NFO"
+    ]
 
     # --------------------------------------------------------
     # NIFTY
     # --------------------------------------------------------
 
-    symbols = (
-        df["tradingsymbol"]
+    df["symbol"] = (
+        df["symbol"]
         .astype(str)
         .str.upper()
+        .str.strip()
+    )
+
+    if "name" in df.columns:
+
+        df["name"] = (
+            df["name"]
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
+
+        nifty_mask = (
+            (df["name"] == "NIFTY")
+            |
+            (
+                df["symbol"]
+                .str.startswith("NIFTY")
+            )
+        )
+
+        df = df[
+            nifty_mask
+        ]
+
+    else:
+
+        df = df[
+            df["symbol"]
+            .str.startswith("NIFTY")
+        ]
+
+    # --------------------------------------------------------
+    # CE only
+    # --------------------------------------------------------
+
+    df = df[
+        df["symbol"]
+        .str.endswith("CE")
+    ]
+
+    # --------------------------------------------------------
+    # Option type
+    # --------------------------------------------------------
+
+    if "instrumenttype" in df.columns:
+
+        instrument_type = (
+            df["instrumenttype"]
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
+
+        option_mask = (
+            instrument_type
+            == "OPTIDX"
+        )
+
+        if option_mask.any():
+
+            df = df[
+                option_mask
+            ]
+
+    # --------------------------------------------------------
+    # Expiry
+    # --------------------------------------------------------
+
+    df["expiry_dt"] = pd.to_datetime(
+        df["expiry"],
+        errors="coerce",
+        dayfirst=True
+    )
+
+    # Fallback for formats such as:
+    # 30SEP2026
+
+    missing_expiry = (
+        df["expiry_dt"].isna()
+    )
+
+    if missing_expiry.any():
+
+        df.loc[
+            missing_expiry,
+            "expiry_dt"
+        ] = pd.to_datetime(
+            df.loc[
+                missing_expiry,
+                "expiry"
+            ].astype(str),
+            format="%d%b%Y",
+            errors="coerce"
+        )
+
+    today = pd.Timestamp(
+        now_ist().date()
     )
 
     df = df[
-        symbols.str.startswith(
-            "NIFTY"
-        )
-    ].copy()
-
-    # --------------------------------------------------------
-    # CE ONLY
-    # --------------------------------------------------------
-
-    df = df[
-        df["tradingsymbol"]
-        .astype(str)
-        .str.upper()
-        .str.endswith("CE")
-    ].copy()
+        df["expiry_dt"]
+        >= today
+    ]
 
     if df.empty:
 
         raise RuntimeError(
-            "No NIFTY CE contracts found."
+            "No future NIFTY CE expiry found."
         )
 
     # --------------------------------------------------------
-    # STRIKE
+    # Nearest expiry
+    # --------------------------------------------------------
+
+    nearest_expiry = (
+        df["expiry_dt"]
+        .min()
+    )
+
+    df = df[
+        df["expiry_dt"]
+        == nearest_expiry
+    ]
+
+    # --------------------------------------------------------
+    # Strike
     # --------------------------------------------------------
 
     df["strike_raw"] = pd.to_numeric(
@@ -1424,805 +1222,137 @@ def select_atm_nifty_ce(
         errors="coerce"
     )
 
-    df = df[
-        df["strike_raw"].notna()
-    ].copy()
-
-    # Angel master commonly stores strikes ×100.
-    #
-    # Example:
-    # 2500000 -> 25000
-    #
-    # Some versions may already provide
-    # actual strike values, so detect it.
+    # Angel instrument master can store
+    # strikes multiplied by 100.
 
     df["strike_actual"] = np.where(
         df["strike_raw"] > 100000,
-        df["strike_raw"] / 100.0,
+        df["strike_raw"] / 100,
         df["strike_raw"]
     )
 
-    # --------------------------------------------------------
-    # EXPIRY
-    # --------------------------------------------------------
-
-    # Convert common Angel formats safely.
-    expiry_raw = (
-        df["expiry"]
-        .astype(str)
-        .str.strip()
-        .str.upper()
-    )
-
-    df["expiry_date"] = pd.to_datetime(
-        expiry_raw,
-        errors="coerce",
-        dayfirst=True
-    )
-
-    # Try another format for values such as
-    # 25SEP2026.
-
-    missing_expiry = (
-        df["expiry_date"].isna()
-    )
-
-    if missing_expiry.any():
-
-        df.loc[
-            missing_expiry,
-            "expiry_date"
-        ] = pd.to_datetime(
-            expiry_raw[
-                missing_expiry
-            ],
-            format="%d%b%Y",
-            errors="coerce"
-        )
-
-    df = df[
-        df["expiry_date"].notna()
-    ].copy()
-
-    if df.empty:
-
-        raise RuntimeError(
-            "No valid NIFTY CE expiry "
-            "dates found."
-        )
-
-    today = pd.Timestamp(
-        now_ist().date()
-    )
-
-    df["expiry_normalized"] = (
-        df["expiry_date"]
-        .dt.normalize()
-    )
-
-    df = df[
-        df["expiry_normalized"]
-        >= today
-    ].copy()
-
-    if df.empty:
-
-        raise RuntimeError(
-            "No active NIFTY CE expiry found."
-        )
-
-    # --------------------------------------------------------
-    # NEAREST EXPIRY
-    # --------------------------------------------------------
-
-    nearest_expiry = (
-        df["expiry_normalized"]
-        .min()
-    )
-
-    df = df[
-        df["expiry_normalized"]
-        == nearest_expiry
-    ].copy()
-
-    if df.empty:
-
-        raise RuntimeError(
-            "No contracts found for "
-            "nearest NIFTY expiry."
-        )
-
-    # --------------------------------------------------------
-    # ATM
-    # --------------------------------------------------------
-
-    spot = float(spot)
-
-    df["distance"] = (
-        df["strike_actual"]
-        - spot
-    ).abs()
-
-    df = df.sort_values(
-        [
-            "distance",
-            "strike_actual",
+    df = df.dropna(
+        subset=[
+            "strike_actual"
         ]
     )
 
-    selected = df.iloc[0]
+    if df.empty:
+
+        raise RuntimeError(
+            "No valid NIFTY CE strikes found."
+        )
+
+    # --------------------------------------------------------
+    # ATM = nearest available strike
+    # --------------------------------------------------------
+
+    df["distance"] = (
+        df["strike_actual"]
+        - float(spot)
+    ).abs()
+
+    selected = (
+        df.sort_values(
+            [
+                "distance",
+                "strike_actual",
+            ]
+        )
+        .iloc[0]
+    )
+
+    token = str(
+        selected["token"]
+    ).strip()
+
+    symbol = str(
+        selected["symbol"]
+    ).strip()
 
     lot_size = int(
-        float(
-            selected["lotsize"]
+        safe_float(
+            selected["lotsize"],
+            0
         )
     )
+
+    strike = float(
+        selected["strike_actual"]
+    )
+
+    expiry = (
+        selected["expiry_dt"]
+        .strftime("%d-%b-%Y")
+    )
+
+    if not token:
+
+        raise RuntimeError(
+            "Selected CE has empty token."
+        )
+
+    if not symbol:
+
+        raise RuntimeError(
+            "Selected CE has empty symbol."
+        )
 
     if lot_size <= 0:
 
         raise RuntimeError(
-            "Invalid NIFTY CE lot size."
+            f"Invalid lot size for {symbol}: "
+            f"{lot_size}"
         )
 
-    option = {
-
-        "symbol":
-            str(
-                selected[
-                    "tradingsymbol"
-                ]
-            ).strip(),
-
-        "token":
-            str(
-                selected[
-                    "symboltoken"
-                ]
-            ).strip(),
-
-        "strike":
-            float(
-                selected[
-                    "strike_actual"
-                ]
-            ),
-
-        "expiry":
-            pd.Timestamp(
-                selected[
-                    "expiry_date"
-                ]
-            ).strftime(
-                "%d-%b-%Y"
-            ),
-
-        "lot_size":
-            lot_size,
-
-        "quantity":
-            lot_size * LOTS,
+    return {
+        "token": token,
+        "symbol": symbol,
+        "strike": strike,
+        "expiry": expiry,
+        "lot_size": lot_size,
+        "quantity": lot_size * LOTS,
     }
 
-    return option
-
 
 # ============================================================
-# ORDER BOOK
+# OPTION LTP
 # ============================================================
 
-def get_order_book(api):
-
-    if api is None:
-
-        return []
+def get_option_ltp(
+    api,
+    symbol,
+    token
+):
 
     try:
 
-        response = api.orderBook()
+        response = api.ltpData(
+            "NFO",
+            symbol,
+            str(token)
+        )
 
         if not response:
+            return None
 
-            return []
-
-        if (
-            isinstance(
-                response,
-                dict
-            )
-            and response.get(
-                "status"
-            ) is False
-        ):
-
-            return []
+        if not response.get("status"):
+            return None
 
         data = response.get(
             "data"
         )
 
-        if isinstance(
-            data,
-            list
-        ):
+        if not data:
+            return None
 
-            return data
-
-        return []
-
-    except Exception as exc:
-
-        st.warning(
-            f"Order Book error: {exc}"
+        return safe_float(
+            data.get("ltp")
         )
 
-        return []
-
-
-# ============================================================
-# FIND RECENT MATCHING ORDER
-# ============================================================
-
-def find_order_in_book(
-    api,
-    symbol=None,
-    transaction_type="BUY"
-):
-
-    orders = get_order_book(
-        api
-    )
-
-    if not orders:
+    except Exception:
 
         return None
-
-    symbol = (
-        str(symbol).strip()
-        if symbol
-        else None
-    )
-
-    transaction_type = (
-        str(
-            transaction_type
-        )
-        .upper()
-        .strip()
-    )
-
-    matches = []
-
-    for order in orders:
-
-        if not isinstance(
-            order,
-            dict
-        ):
-
-            continue
-
-        order_symbol = str(
-            order.get(
-                "tradingsymbol",
-                ""
-            )
-        ).strip()
-
-        order_transaction = str(
-            order.get(
-                "transactiontype",
-                ""
-            )
-        ).upper().strip()
-
-        order_exchange = str(
-            order.get(
-                "exchange",
-                ""
-            )
-        ).upper().strip()
-
-        if (
-            symbol
-            and order_symbol != symbol
-        ):
-
-            continue
-
-        if (
-            transaction_type
-            and order_transaction
-            != transaction_type
-        ):
-
-            continue
-
-        if order_exchange != "NFO":
-
-            continue
-
-        matches.append(
-            order
-        )
-
-    if not matches:
-
-        return None
-
-    # Most recent matching order.
-    return matches[0]
-
-
-# ============================================================
-# WAIT / VERIFY ORDER BOOK
-# ============================================================
-
-def verify_order_in_orderbook(
-    api,
-    symbol,
-    attempts=3,
-    wait_seconds=2
-):
-
-    for attempt in range(
-        attempts
-    ):
-
-        order = find_order_in_book(
-            api,
-            symbol=symbol,
-            transaction_type="BUY"
-        )
-
-        if order:
-
-            order_id = (
-                order.get("orderid")
-                or order.get("orderId")
-            )
-
-            if order_id:
-
-                return order
-
-        if attempt < (
-            attempts - 1
-        ):
-
-            time.sleep(
-                wait_seconds
-            )
-
-    return None
-
-
-# ============================================================
-# PAPER ORDER
-# ============================================================
-
-def create_paper_order(
-    option,
-    spot,
-    candle_time
-):
-
-    order_id = (
-        "PAPER-"
-        + now_ist().strftime(
-            "%Y%m%d%H%M%S"
-        )
-    )
-
-    order = {
-
-        "orderid":
-            order_id,
-
-        "tradingsymbol":
-            option["symbol"],
-
-        "symboltoken":
-            option["token"],
-
-        "transactiontype":
-            "BUY",
-
-        "exchange":
-            "NFO",
-
-        "ordertype":
-            "MARKET",
-
-        "producttype":
-            "INTRADAY",
-
-        "quantity":
-            str(
-                option["quantity"]
-            ),
-
-        "status":
-            "PAPER ORDER",
-
-        "spot":
-            spot,
-
-        "candle":
-            str(
-                candle_time
-            ),
-
-        "time":
-            now_ist().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
-    }
-
-    st.session_state[
-        "paper_orders"
-    ].insert(
-        0,
-        order
-    )
-
-    return order_id
-
-
-# ============================================================
-# REAL BUY ORDER
-# ============================================================
-
-def place_real_buy_order(
-    api,
-    option
-):
-
-    if api is None:
-
-        raise RuntimeError(
-            "Angel One API is not connected."
-        )
-
-    order_params = {
-
-        "variety":
-            "NORMAL",
-
-        "tradingsymbol":
-            option["symbol"],
-
-        "symboltoken":
-            option["token"],
-
-        "transactiontype":
-            "BUY",
-
-        "exchange":
-            "NFO",
-
-        "ordertype":
-            "MARKET",
-
-        "producttype":
-            "INTRADAY",
-
-        "duration":
-            "DAY",
-
-        "price":
-            "0",
-
-        "squareoff":
-            "0",
-
-        "stoploss":
-            "0",
-
-        "quantity":
-            str(
-                option["quantity"]
-            ),
-    }
-
-    # --------------------------------------------------------
-    # IMPORTANT SAFETY LOCK
-    #
-    # Mark the candle as attempted BEFORE sending the order.
-    #
-    # If Angel accepts the order but the response is lost,
-    # Streamlit reruns cannot send another order.
-    # --------------------------------------------------------
-
-    try:
-
-        if hasattr(
-            api,
-            "placeOrderFullResponse"
-        ):
-
-            response = (
-                api.placeOrderFullResponse(
-                    order_params
-                )
-            )
-
-        else:
-
-            response = api.placeOrder(
-                order_params
-            )
-
-    except Exception as exc:
-
-        # ----------------------------------------------------
-        # We cannot know with certainty whether the broker
-        # received the request.
-        #
-        # Therefore DO NOT automatically retry.
-        # ----------------------------------------------------
-
-        st.session_state[
-            "order_status_unknown"
-        ] = True
-
-        raise RuntimeError(
-            "Angel One order request raised "
-            "an exception. Order status is UNKNOWN. "
-            "No automatic retry was performed. "
-            f"Details: {exc}"
-        )
-
-    # --------------------------------------------------------
-    # NORMAL RESPONSE
-    # --------------------------------------------------------
-
-    if response:
-
-        if isinstance(
-            response,
-            dict
-        ):
-
-            if response.get(
-                "status"
-            ) is False:
-
-                raise RuntimeError(
-                    "Angel One rejected order: "
-                    + str(response)
-                )
-
-            data = response.get(
-                "data"
-            )
-
-            if isinstance(
-                data,
-                dict
-            ):
-
-                order_id = (
-                    data.get(
-                        "orderid"
-                    )
-                    or data.get(
-                        "orderId"
-                    )
-                )
-
-                if order_id:
-
-                    return str(
-                        order_id
-                    )
-
-        if isinstance(
-            response,
-            str
-        ):
-
-            if response.strip():
-
-                return response.strip()
-
-    # --------------------------------------------------------
-    # EMPTY RESPONSE
-    #
-    # Check Order Book.
-    # --------------------------------------------------------
-
-    existing = (
-        verify_order_in_orderbook(
-            api,
-            option["symbol"],
-            attempts=3,
-            wait_seconds=2
-        )
-    )
-
-    if existing:
-
-        order_id = (
-            existing.get("orderid")
-            or existing.get("orderId")
-        )
-
-        if order_id:
-
-            return str(
-                order_id
-            )
-
-    # --------------------------------------------------------
-    # UNKNOWN
-    # --------------------------------------------------------
-
-    st.session_state[
-        "order_status_unknown"
-    ] = True
-
-    raise RuntimeError(
-        "Angel One returned an empty order "
-        "response and no matching BUY order "
-        "was found in Order Book. "
-        "Order status is UNKNOWN. "
-        "NO AUTOMATIC RETRY WILL BE PERFORMED."
-    )
-
-
-# ============================================================
-# AUTOMATIC BUY CE
-# ============================================================
-
-def automatic_buy_ce(
-    api,
-    instruments,
-    spot,
-    candle_time
-):
-
-    candle_key = str(
-        candle_time
-    )
-
-    # --------------------------------------------------------
-    # UNKNOWN ORDER LOCK
-    # --------------------------------------------------------
-
-    if st.session_state.get(
-        "order_status_unknown",
-        False
-    ):
-
-        return {
-
-            "status":
-                "ORDER_STATUS_UNKNOWN",
-
-            "order_id":
-                None,
-        }
-
-    # --------------------------------------------------------
-    # Already confirmed order
-    # --------------------------------------------------------
-
-    last_order_id = (
-        st.session_state.get(
-            "last_order_id"
-        )
-    )
-
-    if last_order_id:
-
-        return {
-
-            "status":
-                "ALREADY_ORDERED",
-
-            "order_id":
-                last_order_id,
-        }
-
-    # --------------------------------------------------------
-    # Candle already attempted
-    # --------------------------------------------------------
-
-    attempted_candle = (
-        st.session_state.get(
-            "order_attempted_candle"
-        )
-    )
-
-    if (
-        attempted_candle
-        == candle_key
-    ):
-
-        return {
-
-            "status":
-                "ALREADY_ATTEMPTED",
-
-            "order_id":
-                None,
-        }
-
-    # --------------------------------------------------------
-    # Mark attempted BEFORE broker request.
-    #
-    # This protects against Streamlit reruns.
-    # --------------------------------------------------------
-
-    st.session_state[
-        "order_attempted_candle"
-    ] = candle_key
-
-    # --------------------------------------------------------
-    # Select ATM CE
-    # --------------------------------------------------------
-
-    option = select_atm_nifty_ce(
-        instruments,
-        spot
-    )
-
-    st.session_state[
-        "selected_option"
-    ] = option
-
-    # --------------------------------------------------------
-    # PAPER
-    # --------------------------------------------------------
-
-    if PAPER_TRADING:
-
-        order_id = create_paper_order(
-            option,
-            spot,
-            candle_time
-        )
-
-    # --------------------------------------------------------
-    # LIVE
-    # --------------------------------------------------------
-
-    else:
-
-        order_id = place_real_buy_order(
-            api,
-            option
-        )
-
-    # --------------------------------------------------------
-    # Save confirmed order
-    # --------------------------------------------------------
-
-    st.session_state[
-        "last_order_id"
-    ] = order_id
-
-    st.session_state[
-        "last_order_time"
-    ] = now_ist().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    st.session_state[
-        "last_order_candle"
-    ] = candle_key
-
-    return {
-
-        "status":
-            "ORDER_PLACED",
-
-        "order_id":
-            order_id,
-
-        "option":
-            option,
-    }
 
 
 # ============================================================
@@ -2232,7 +1362,6 @@ def automatic_buy_ce(
 def load_state():
 
     if not STATE_FILE.exists():
-
         return
 
     try:
@@ -2243,93 +1372,43 @@ def load_state():
             encoding="utf-8"
         ) as f:
 
-            state = json.load(f)
+            data = json.load(f)
 
-        st.session_state[
-            "last_order_id"
-        ] = state.get(
-            "last_order_id"
-        )
+        for key in [
+            "last_order_id",
+            "last_order_symbol",
+            "order_status",
+            "order_status_unknown",
+        ]:
 
-        st.session_state[
-            "last_order_time"
-        ] = state.get(
-            "last_order_time"
-        )
+            if key in data:
 
-        st.session_state[
-            "last_order_candle"
-        ] = state.get(
-            "last_order_candle"
-        )
+                st.session_state[
+                    key
+                ] = data[key]
 
-        st.session_state[
-            "order_attempted_candle"
-        ] = state.get(
-            "order_attempted_candle"
-        )
+    except Exception:
 
-        st.session_state[
-            "order_status_unknown"
-        ] = bool(
-            state.get(
-                "order_status_unknown",
-                False
-            )
-        )
+        pass
 
-        st.session_state[
-            "selected_option"
-        ] = state.get(
-            "selected_option"
-        )
-
-    except Exception as exc:
-
-        st.warning(
-            "Could not load state: "
-            + str(exc)
-        )
-
-
-# ============================================================
-# SAVE STATE
-# ============================================================
 
 def save_state():
 
-    state = {
-
+    data = {
         "last_order_id":
-            st.session_state.get(
-                "last_order_id"
-            ),
+            st.session_state.last_order_id,
 
-        "last_order_time":
-            st.session_state.get(
-                "last_order_time"
-            ),
+        "last_order_symbol":
+            st.session_state.last_order_symbol,
 
-        "last_order_candle":
-            st.session_state.get(
-                "last_order_candle"
-            ),
-
-        "order_attempted_candle":
-            st.session_state.get(
-                "order_attempted_candle"
-            ),
+        "order_status":
+            st.session_state.order_status,
 
         "order_status_unknown":
-            st.session_state.get(
-                "order_status_unknown",
-                False
-            ),
+            st.session_state.order_status_unknown,
 
-        "selected_option":
-            st.session_state.get(
-                "selected_option"
-            ),
+        "updated":
+            now_ist().isoformat(),
     }
 
     try:
@@ -2341,66 +1420,574 @@ def save_state():
         ) as f:
 
             json.dump(
-                state,
+                data,
                 f,
-                indent=2,
-                default=str
+                indent=2
+            )
+
+    except Exception:
+
+        pass
+
+
+# ============================================================
+# ORDER BOOK
+# ============================================================
+
+def get_order_book(api):
+
+    try:
+
+        response = api.orderBook()
+
+        if not response:
+
+            return []
+
+        if not response.get("status"):
+
+            return []
+
+        data = response.get(
+            "data"
+        )
+
+        if not data:
+
+            return []
+
+        return data
+
+    except Exception:
+
+        return []
+
+
+# ============================================================
+# FIND ORDER IN ORDER BOOK
+# ============================================================
+
+def find_order_for_symbol(
+    orders,
+    symbol
+):
+
+    if not orders:
+        return None
+
+    symbol = str(
+        symbol
+    ).upper().strip()
+
+    for order in orders:
+
+        order_symbol = str(
+            order.get(
+                "tradingsymbol",
+                ""
+            )
+        ).upper().strip()
+
+        transaction = str(
+            order.get(
+                "transactiontype",
+                ""
+            )
+        ).upper().strip()
+
+        exchange = str(
+            order.get(
+                "exchange",
+                ""
+            )
+        ).upper().strip()
+
+        if (
+            order_symbol == symbol
+            and transaction == "BUY"
+            and exchange == "NFO"
+        ):
+
+            return order
+
+    return None
+
+
+# ============================================================
+# PLACE PAPER ORDER
+# ============================================================
+
+def place_paper_order(
+    option
+):
+
+    order_id = (
+        "PAPER-"
+        + now_ist().strftime(
+            "%Y%m%d%H%M%S"
+        )
+    )
+
+    st.session_state.last_order_id = (
+        order_id
+    )
+
+    st.session_state.last_order_symbol = (
+        option["symbol"]
+    )
+
+    st.session_state.order_status = (
+        "PAPER ORDER"
+    )
+
+    st.session_state.order_status_unknown = (
+        False
+    )
+
+    save_state()
+
+    return order_id
+
+
+# ============================================================
+# PLACE REAL ANGEL ORDER
+# ============================================================
+
+def place_real_order(
+    api,
+    option
+):
+
+    params = {
+        "variety": "NORMAL",
+
+        "tradingsymbol":
+            option["symbol"],
+
+        "symboltoken":
+            str(option["token"]),
+
+        "transactiontype": "BUY",
+
+        "exchange": "NFO",
+
+        "ordertype": ORDER_TYPE,
+
+        "producttype": PRODUCT_TYPE,
+
+        "duration": DURATION,
+
+        "price": "0",
+
+        "squareoff": "0",
+
+        "stoploss": "0",
+
+        "quantity": str(
+            option["quantity"]
+        ),
+    }
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Mark order attempt BEFORE sending request.
+    #
+    # If Angel returns empty response, we do NOT blindly
+    # submit another order.
+    # --------------------------------------------------------
+
+    st.session_state.last_order_symbol = (
+        option["symbol"]
+    )
+
+    st.session_state.order_status = (
+        "ORDER SENT - VERIFYING"
+    )
+
+    st.session_state.order_status_unknown = (
+        True
+    )
+
+    save_state()
+
+    # --------------------------------------------------------
+    # Try Full Response API when available.
+    # --------------------------------------------------------
+
+    try:
+
+        if hasattr(
+            api,
+            "placeOrderFullResponse"
+        ):
+
+            response = (
+                api.placeOrderFullResponse(
+                    params
+                )
+            )
+
+        else:
+
+            response = (
+                api.placeOrder(
+                    params
+                )
             )
 
     except Exception as exc:
 
-        st.warning(
-            "Could not save state: "
-            + str(exc)
+        # ----------------------------------------------------
+        # The request itself may have reached Angel.
+        # Therefore do NOT automatically retry.
+        # ----------------------------------------------------
+
+        st.session_state.order_status = (
+            "ORDER RESPONSE ERROR - CHECK ORDER BOOK"
         )
 
+        st.session_state.order_status_unknown = (
+            True
+        )
 
-# ============================================================
-# MARKET HOURS
-# ============================================================
+        save_state()
 
-def market_is_open():
+        return None, str(exc)
 
-    current = now_ist()
+    # --------------------------------------------------------
+    # Empty response
+    # --------------------------------------------------------
 
-    if current.weekday() >= 5:
+    if not response:
 
-        return False
+        st.session_state.order_status = (
+            "EMPTY RESPONSE - CHECKING ORDER BOOK"
+        )
 
-    start = current.replace(
-        hour=9,
-        minute=15,
-        second=0,
-        microsecond=0
+        save_state()
+
+        return None, "EMPTY RESPONSE"
+
+    # --------------------------------------------------------
+    # Dictionary response
+    # --------------------------------------------------------
+
+    if isinstance(
+        response,
+        dict
+    ):
+
+        status = response.get(
+            "status"
+        )
+
+        message = response.get(
+            "message",
+            ""
+        )
+
+        errorcode = response.get(
+            "errorcode",
+            ""
+        )
+
+        data = response.get(
+            "data"
+        )
+
+        order_id = None
+
+        if isinstance(
+            data,
+            dict
+        ):
+
+            order_id = (
+                data.get("orderid")
+                or data.get("orderId")
+            )
+
+        elif isinstance(
+            data,
+            str
+        ):
+
+            order_id = data
+
+        if order_id:
+
+            st.session_state.last_order_id = (
+                str(order_id)
+            )
+
+            st.session_state.order_status = (
+                "ORDER ACCEPTED"
+            )
+
+            st.session_state.order_status_unknown = (
+                False
+            )
+
+            save_state()
+
+            return (
+                str(order_id),
+                None
+            )
+
+        if status is False:
+
+            st.session_state.order_status = (
+                "BROKER REJECTED ORDER"
+            )
+
+            st.session_state.order_status_unknown = (
+                False
+            )
+
+            save_state()
+
+            return (
+                None,
+                f"{message} | {errorcode}"
+            )
+
+    # --------------------------------------------------------
+    # String response
+    # --------------------------------------------------------
+
+    if isinstance(
+        response,
+        str
+    ):
+
+        if response.strip():
+
+            st.session_state.last_order_id = (
+                response.strip()
+            )
+
+            st.session_state.order_status = (
+                "ORDER ACCEPTED"
+            )
+
+            st.session_state.order_status_unknown = (
+                False
+            )
+
+            save_state()
+
+            return (
+                response.strip(),
+                None
+            )
+
+    # --------------------------------------------------------
+    # Unknown response
+    # --------------------------------------------------------
+
+    st.session_state.order_status = (
+        "UNKNOWN RESPONSE - CHECK ORDER BOOK"
     )
 
-    end = current.replace(
-        hour=15,
-        minute=30,
-        second=0,
-        microsecond=0
+    st.session_state.order_status_unknown = (
+        True
     )
+
+    save_state()
 
     return (
-        start
-        <= current
-        <= end
+        None,
+        str(response)
     )
 
 
 # ============================================================
-# LOAD STATE ONCE
+# VERIFY ORDER BOOK AFTER UNCERTAIN RESPONSE
 # ============================================================
 
-if not st.session_state[
-    "state_loaded"
-]:
+def verify_order_book(
+    api,
+    symbol,
+    checks=3,
+    delay=2
+):
 
-    load_state()
+    for _ in range(checks):
 
-    st.session_state[
-        "state_loaded"
-    ] = True
+        orders = get_order_book(
+            api
+        )
+
+        found = find_order_for_symbol(
+            orders,
+            symbol
+        )
+
+        if found:
+
+            order_id = found.get(
+                "orderid"
+            )
+
+            status = found.get(
+                "orderstatus",
+                "FOUND"
+            )
+
+            st.session_state.last_order_id = (
+                str(order_id or "")
+            )
+
+            st.session_state.order_status = (
+                str(status)
+            )
+
+            st.session_state.order_status_unknown = (
+                False
+            )
+
+            save_state()
+
+            return found
+
+        time.sleep(delay)
+
+    return None
+
+
+# ============================================================
+# AUTOMATIC BUY CE
+# ============================================================
+
+def automatic_buy_ce(
+    api,
+    option
+):
+
+    # --------------------------------------------------------
+    # Duplicate protection
+    # --------------------------------------------------------
+
+    if (
+        st.session_state.last_order_id
+        or st.session_state.order_status_unknown
+    ):
+
+        return (
+            False,
+            "Order already attempted. "
+            "Automatic retry disabled."
+        )
+
+    # --------------------------------------------------------
+    # Market check
+    # --------------------------------------------------------
+
+    if not is_market_open():
+
+        return (
+            False,
+            "Market is closed."
+        )
+
+    # --------------------------------------------------------
+    # PAPER MODE
+    # --------------------------------------------------------
+
+    if PAPER_TRADING:
+
+        order_id = place_paper_order(
+            option
+        )
+
+        return (
+            True,
+            order_id
+        )
+
+    # --------------------------------------------------------
+    # REAL ORDER
+    # --------------------------------------------------------
+
+    order_id, error = place_real_order(
+        api,
+        option
+    )
+
+    if order_id:
+
+        return (
+            True,
+            order_id
+        )
+
+    # --------------------------------------------------------
+    # Empty/uncertain response:
+    # check Order Book before considering anything else.
+    # --------------------------------------------------------
+
+    found = verify_order_book(
+        api,
+        option["symbol"]
+    )
+
+    if found:
+
+        return (
+            True,
+            str(
+                found.get(
+                    "orderid",
+                    ""
+                )
+            )
+        )
+
+    return (
+        False,
+        "Order status UNKNOWN. "
+        "Check Angel One Order Book. "
+        "No automatic retry was performed."
+    )
+
+
+# ============================================================
+# CHART
+# ============================================================
+
+def prepare_chart_data(
+    df
+):
+
+    chart = df[
+        [
+            "open",
+            "high",
+            "low",
+            "close",
+            "Supertrend",
+        ]
+    ].copy()
+
+    chart = chart.rename(
+        columns={
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "Supertrend": "Supertrend",
+        }
+    )
+
+    return chart
+
+
+# ============================================================
+# LOAD PERSISTENT STATE
+# ============================================================
+
+load_state()
 
 
 # ============================================================
@@ -2408,225 +1995,147 @@ if not st.session_state[
 # ============================================================
 
 st.title(
-    "📈 NIFTY 2-Minute Automatic CE Trader"
+    "📈 NIFTY Automatic BUY CE"
 )
 
 st.caption(
-    "ONLY 2-Minute Supertrend (20, 1.5)"
+    "2-Minute Supertrend (20, 1.5) | "
+    "GREEN = BUY CE | RED = WAIT"
 )
+
+
+# ============================================================
+# SAFETY STATUS
+# ============================================================
 
 if PAPER_TRADING:
 
     st.warning(
-        "🧪 PAPER TRADING MODE — "
-        "NO REAL BROKER ORDER WILL BE SENT"
+        "🟡 PAPER TRADING MODE — "
+        "NO REAL ORDER WILL BE SENT"
     )
 
 else:
 
     st.error(
-        "🔴 LIVE TRADING ENABLED — "
-        "REAL NIFTY CE ORDERS CAN BE PLACED"
+        "🔴 LIVE TRADING MODE — "
+        "REAL ANGEL ONE ORDERS CAN BE PLACED"
     )
 
 
 # ============================================================
-# SIDEBAR
+# LOGIN
 # ============================================================
 
-with st.sidebar:
+try:
 
-    st.header(
-        "System"
+    if (
+        st.session_state.api is None
+        or not st.session_state.login_status
+    ):
+
+        with st.spinner(
+            "Logging into Angel One..."
+        ):
+
+            api = login_angel()
+
+        st.session_state.api = api
+
+        st.session_state.login_status = (
+            True
+        )
+
+        st.session_state.last_error = ""
+
+except Exception as exc:
+
+    st.session_state.login_status = (
+        False
     )
 
-    st.write(
-        "Login:",
-        st.session_state[
-            "login_status"
-        ]
+    st.session_state.last_error = str(
+        exc
     )
 
-    st.write(
-        "Market:",
+    st.error(
+        "Angel One Login Error"
+    )
+
+    st.code(
+        str(exc)
+    )
+
+    st.stop()
+
+
+api = st.session_state.api
+
+
+# ============================================================
+# TOP STATUS
+# ============================================================
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+
+    st.metric(
+        "Login",
+        "CONNECTED"
+    )
+
+with col2:
+
+    st.metric(
+        "Market",
         "OPEN"
-        if market_is_open()
+        if is_market_open()
         else "CLOSED"
     )
 
-    st.write(
-        "Strategy:",
-        "Supertrend 20, 1.5"
-    )
+with col3:
 
-    st.write(
-        "Timeframe:",
-        "2 Minute"
-    )
-
-    st.write(
-        "Signal:",
-        "GREEN = BUY CE"
-    )
-
-    st.write(
-        "Lots:",
-        LOTS
-    )
-
-    st.write(
-        "Trading:",
+    st.metric(
+        "Mode",
         "PAPER"
         if PAPER_TRADING
         else "LIVE"
     )
 
-    st.write(
-        "Refresh:",
-        f"{REFRESH_SECONDS} sec"
-    )
+with col4:
 
-    if st.button(
-        "Connect Angel One",
-        use_container_width=True
-    ):
-
-        try:
-
-            angel_login()
-
-            st.success(
-                "Angel One connected."
-            )
-
-        except Exception as exc:
-
-            log_error(exc)
-
-            st.error(
-                str(exc)
-            )
-
-
-# ============================================================
-# AUTO LOGIN
-# ============================================================
-
-if (
-    st.session_state["api"]
-    is None
-):
-
-    if (
-        ANGEL_API_KEY
-        and ANGEL_CLIENT_ID
-        and ANGEL_PASSWORD
-        and ANGEL_TOTP_SECRET
-    ):
-
-        try:
-
-            angel_login()
-
-        except Exception as exc:
-
-            log_error(exc)
-
-
-# ============================================================
-# API
-# ============================================================
-
-api = st.session_state[
-    "api"
-]
-
-
-if api is None:
-
-    st.error(
-        "Angel One is not connected."
-    )
-
-    st.info(
-        "Set ANGEL_API_KEY, "
-        "ANGEL_CLIENT_ID, "
-        "ANGEL_PASSWORD and "
-        "ANGEL_TOTP_SECRET."
-    )
-
-    if st.session_state[
-        "last_error"
-    ]:
-
-        st.code(
-            st.session_state[
-                "last_error"
-            ]
-        )
-
-    st.stop()
-
-
-# ============================================================
-# INSTRUMENT MASTER
-# ============================================================
-
-if st.session_state[
-    "instruments"
-] is None:
-
-    try:
-
-        st.session_state[
-            "instruments"
-        ] = download_instrument_master()
-
-    except Exception as exc:
-
-        st.error(
-            str(exc)
-        )
-
-        st.stop()
-
-
-instruments = st.session_state[
-    "instruments"
-]
-
-
-# ============================================================
-# MARKET STATUS
-# ============================================================
-
-if not market_is_open():
-
-    st.info(
-        "Market is currently CLOSED. "
-        "Automatic BUY CE will operate only "
-        "during NSE market hours "
-        "09:15–15:30 IST."
+    st.metric(
+        "Strategy",
+        "2M ST 20,1.5"
     )
 
 
 # ============================================================
-# NIFTY SPOT
+# GET NIFTY LTP
 # ============================================================
 
 try:
 
-    spot = get_nifty_ltp(
+    nifty_ltp = get_nifty_ltp(
         api
     )
 
-    st.session_state[
-        "spot"
-    ] = spot
+    st.session_state.nifty_ltp = (
+        nifty_ltp
+    )
 
 except Exception as exc:
 
+    st.session_state.last_error = str(
+        exc
+    )
+
     st.error(
+        "NIFTY LTP ERROR"
+    )
+
+    st.code(
         str(exc)
     )
 
@@ -2634,121 +2143,85 @@ except Exception as exc:
 
 
 # ============================================================
-# 1-MINUTE CANDLES
+# GET CANDLES
 # ============================================================
 
 try:
 
-    df1 = get_nifty_1m_candles(
-        api,
-        days=CANDLE_DAYS
+    df_1m = get_nifty_1m_candles(
+        api
     )
 
-    df2 = resample_to_2min(
-        df1
+    df_2m = resample_to_2min(
+        df_1m
+    )
+
+    if len(df_2m) < (
+        SUPERTREND_PERIOD + 5
+    ):
+
+        raise RuntimeError(
+            "Not enough 2-minute candles "
+            "for Supertrend calculation."
+        )
+
+    df_st = calculate_supertrend(
+        df_2m,
+        SUPERTREND_PERIOD,
+        SUPERTREND_MULTIPLIER
     )
 
 except Exception as exc:
 
     st.error(
+        "Candle / Supertrend Error"
+    )
+
+    st.code(
         str(exc)
     )
 
     st.stop()
 
 
-st.session_state[
-    "candles_2m"
-] = df2
-
-
 # ============================================================
-# SUPERTREND
+# LATEST CLOSED CANDLE
 # ============================================================
 
-try:
+latest = df_st.iloc[-1]
 
-    st_df = calculate_supertrend(
-        df2,
-        period=SUPERTREND_PERIOD,
-        multiplier=SUPERTREND_MULTIPLIER
-    )
+latest_time = df_st.index[-1]
 
-except Exception as exc:
+direction = latest[
+    "ST_Direction"
+]
 
-    st.error(
-        str(exc)
-    )
-
-    st.stop()
-
-
-st.session_state[
-    "supertrend_df"
-] = st_df
-
-
-# ============================================================
-# CLOSED CANDLES ONLY
-# ============================================================
-
-closed_df = (
-    get_closed_2min_dataframe(
-        st_df
-    )
+supertrend_value = safe_float(
+    latest["Supertrend"]
 )
 
-if closed_df.empty:
-
-    st.warning(
-        "Waiting for a closed 2-minute candle."
-    )
-
-    st.stop()
-
-
-last_closed_time = (
-    closed_df.index[-1]
+close_value = safe_float(
+    latest["close"]
 )
 
-last_row = (
-    closed_df.iloc[-1]
+st.session_state.last_candle_time = (
+    str(latest_time)
 )
 
+st.session_state.supertrend = (
+    supertrend_value
+)
 
-# ============================================================
-# CHECK VALID SUPERTREND
-# ============================================================
-
-if pd.isna(
-    last_row["Supertrend"]
-):
-
-    st.warning(
-        "Supertrend is still calculating. "
-        "Waiting for enough closed candles."
-    )
-
-    st.stop()
+st.session_state.st_direction = (
+    direction
+)
 
 
 # ============================================================
 # SIGNAL
 # ============================================================
-#
-# IMPORTANT:
-#
-# GREEN = BUY CE
-# RED   = WAIT
-#
-# NO FLIP REQUIRED.
-# ============================================================
 
-st_green = bool(
-    last_row["ST_Green"]
-)
-
-if st_green:
+if direction == 1:
 
     signal = "BUY CE"
 
@@ -2757,329 +2230,269 @@ else:
     signal = "WAIT"
 
 
-st.session_state[
-    "st_green"
-] = st_green
-
-st.session_state[
-    "st_value"
-] = float(
-    last_row[
-        "Supertrend"
-    ]
-)
-
-st.session_state[
-    "signal"
-] = signal
-
-st.session_state[
-    "signal_time"
-] = str(
-    last_closed_time
-)
+st.session_state.signal = signal
 
 
 # ============================================================
-# TOP METRICS
+# SIGNAL DISPLAY
 # ============================================================
-
-c1, c2, c3, c4, c5 = st.columns(5)
-
-c1.metric(
-    "NIFTY Spot",
-    f"{spot:.2f}"
-)
-
-c2.metric(
-    "Supertrend",
-    f"{float(last_row['Supertrend']):.2f}"
-)
-
-c3.metric(
-    "ST Status",
-    "🟢 GREEN"
-    if st_green
-    else "🔴 RED"
-)
-
-c4.metric(
-    "Signal",
-    signal
-)
-
-c5.metric(
-    "Closed Candle",
-    last_closed_time.strftime(
-        "%H:%M:%S"
-    )
-)
-
-
-# ============================================================
-# AUTOMATIC BUY
-# ============================================================
-
-st.divider()
 
 st.subheader(
-    "🤖 Automatic BUY CE"
+    "Current Signal"
 )
+
+signal_col1, signal_col2, signal_col3, signal_col4 = (
+    st.columns(4)
+)
+
+with signal_col1:
+
+    st.metric(
+        "NIFTY",
+        f"{nifty_ltp:,.2f}"
+    )
+
+with signal_col2:
+
+    st.metric(
+        "2M Close",
+        f"{close_value:,.2f}"
+    )
+
+with signal_col3:
+
+    st.metric(
+        "Supertrend",
+        (
+            f"{supertrend_value:,.2f}"
+            if supertrend_value is not None
+            else "-"
+        )
+    )
+
+with signal_col4:
+
+    st.metric(
+        "Signal",
+        signal
+    )
+
+
+st.write(
+    f"Last closed 2-minute candle: "
+    f"`{latest_time}`"
+)
+
+
+# ============================================================
+# ATM CE
+# ============================================================
+
+option = None
 
 if signal == "BUY CE":
 
-    st.success(
-        "🟢 SUPERTREND GREEN → "
-        "BUY CE CONDITION IS ACTIVE"
-    )
+    try:
 
-    # --------------------------------------------------------
-    # Unknown order safety lock
-    # --------------------------------------------------------
+        option = select_atm_nifty_ce(
+            nifty_ltp
+        )
 
-    if st.session_state.get(
-        "order_status_unknown",
-        False
-    ):
+        st.session_state.atm_symbol = (
+            option["symbol"]
+        )
+
+        st.session_state.atm_token = (
+            option["token"]
+        )
+
+        st.session_state.atm_strike = (
+            option["strike"]
+        )
+
+        st.session_state.atm_expiry = (
+            option["expiry"]
+        )
+
+        st.session_state.atm_lot_size = (
+            option["lot_size"]
+        )
+
+    except Exception as exc:
 
         st.error(
-            "⚠️ ORDER STATUS UNKNOWN — "
-            "automatic retry is LOCKED."
+            "ATM CE selection failed."
         )
 
-        st.info(
-            "Check Angel One Order Book manually "
-            "before allowing another order."
+        st.code(
+            str(exc)
         )
 
-    # --------------------------------------------------------
-    # Market closed
-    # --------------------------------------------------------
-
-    elif not market_is_open():
-
-        st.warning(
-            "BUY CE signal exists, but the market "
-            "is closed. No order will be sent."
-        )
-
-    else:
-
-        try:
-
-            result = automatic_buy_ce(
-                api,
-                instruments,
-                spot,
-                last_closed_time
-            )
-
-            if (
-                result["status"]
-                == "ORDER_PLACED"
-            ):
-
-                st.success(
-                    "✅ AUTOMATIC BUY CE "
-                    "ORDER CONFIRMED"
-                )
-
-                st.write(
-                    "Order ID:",
-                    result[
-                        "order_id"
-                    ]
-                )
-
-                option = result.get(
-                    "option"
-                )
-
-                if option:
-
-                    st.write(
-                        "ATM CE:",
-                        option["symbol"]
-                    )
-
-                    st.write(
-                        "Quantity:",
-                        option["quantity"]
-                    )
-
-            elif (
-                result["status"]
-                == "ALREADY_ORDERED"
-            ):
-
-                st.info(
-                    "Duplicate protection active. "
-                    "Existing order: "
-                    + str(
-                        result[
-                            "order_id"
-                        ]
-                    )
-                )
-
-            elif (
-                result["status"]
-                == "ALREADY_ATTEMPTED"
-            ):
-
-                st.warning(
-                    "This candle has already "
-                    "been attempted. "
-                    "No duplicate order will be sent."
-                )
-
-            elif (
-                result["status"]
-                == "ORDER_STATUS_UNKNOWN"
-            ):
-
-                st.error(
-                    "Order status is UNKNOWN. "
-                    "Automatic retry is disabled."
-                )
-
-        except Exception as exc:
-
-            log_error(exc)
-
-            st.error(
-                "Automatic BUY CE error: "
-                + str(exc)
-            )
-
-else:
-
-    st.info(
-        "🔴 Supertrend is RED → WAIT"
-    )
+        st.stop()
 
 
 # ============================================================
-# SELECTED ATM CE
+# OPTION INFORMATION
 # ============================================================
-
-st.divider()
-
-st.subheader(
-    "🎯 Selected ATM NIFTY CE"
-)
-
-option = st.session_state.get(
-    "selected_option"
-)
 
 if option:
 
-    a1, a2, a3, a4, a5 = (
-        st.columns(5)
+    option_ltp = get_option_ltp(
+        api,
+        option["symbol"],
+        option["token"]
     )
 
-    a1.metric(
-        "Trading Symbol",
-        option["symbol"]
+    st.session_state.atm_ltp = (
+        option_ltp
     )
 
-    a2.metric(
-        "ATM Strike",
-        f"{option['strike']:.0f}"
+    st.subheader(
+        "Selected ATM NIFTY CE"
     )
 
-    a3.metric(
-        "Expiry",
-        option["expiry"]
-    )
+    c1, c2, c3, c4, c5 = st.columns(5)
 
-    a4.metric(
-        "Lot Size",
-        option["lot_size"]
-    )
+    with c1:
 
-    a5.metric(
-        "Quantity",
-        option["quantity"]
-    )
-
-    st.caption(
-        "Symbol Token: "
-        + str(
-            option["token"]
+        st.metric(
+            "Symbol",
+            option["symbol"]
         )
-    )
 
-else:
+    with c2:
 
-    st.info(
-        "ATM NIFTY CE will be selected "
-        "automatically when BUY CE is triggered."
-    )
+        st.metric(
+            "Strike",
+            f"{option['strike']:,.0f}"
+        )
+
+    with c3:
+
+        st.metric(
+            "Expiry",
+            option["expiry"]
+        )
+
+    with c4:
+
+        st.metric(
+            "Lot Size",
+            option["lot_size"]
+        )
+
+    with c5:
+
+        st.metric(
+            "CE LTP",
+            (
+                f"{option_ltp:,.2f}"
+                if option_ltp is not None
+                else "-"
+            )
+        )
+
+
+# ============================================================
+# AUTOMATIC ORDER ENGINE
+# ============================================================
+
+if signal == "BUY CE" and option:
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # This executes automatically.
+    #
+    # There is NO manual BUY button.
+    # --------------------------------------------------------
+
+    if (
+        not st.session_state.last_order_id
+        and not st.session_state.order_status_unknown
+    ):
+
+        with st.spinner(
+            "BUY CE signal detected — "
+            "processing automatic order..."
+        ):
+
+            success, result = (
+                automatic_buy_ce(
+                    api,
+                    option
+                )
+            )
+
+        if success:
+
+            st.success(
+                "Automatic BUY CE processed."
+            )
+
+            st.write(
+                f"Order ID: `{result}`"
+            )
+
+        else:
+
+            st.warning(
+                str(result)
+            )
+
+    else:
+
+        st.info(
+            "Automatic order already attempted "
+            "or order status is uncertain. "
+            "No duplicate order will be sent."
+        )
 
 
 # ============================================================
 # ORDER STATUS
 # ============================================================
 
-st.divider()
-
 st.subheader(
-    "📦 Automatic Order Status"
+    "Order Status"
 )
 
-o1, o2, o3, o4 = st.columns(4)
+status_col1, status_col2 = st.columns(2)
 
-o1.metric(
-    "Last Order ID",
-    str(
-        st.session_state.get(
-            "last_order_id"
+with status_col1:
+
+    st.metric(
+        "Last Order ID",
+        (
+            st.session_state.last_order_id
+            or "-"
         )
-        or "-"
     )
-)
 
-o2.metric(
-    "Order Time",
-    str(
-        st.session_state.get(
-            "last_order_time"
+with status_col2:
+
+    st.metric(
+        "Status",
+        (
+            st.session_state.order_status
+            or "NONE"
         )
-        or "-"
     )
-)
 
-o3.metric(
-    "Mode",
-    "PAPER"
-    if PAPER_TRADING
-    else "LIVE"
-)
 
-o4.metric(
-    "Order Status",
-    "UNKNOWN"
-    if st.session_state.get(
-        "order_status_unknown",
-        False
+if st.session_state.order_status_unknown:
+
+    st.warning(
+        "⚠️ Order status is UNKNOWN.\n\n"
+        "The broker response was empty or uncertain. "
+        "The program will NOT automatically retry because "
+        "a retry could create a duplicate order.\n\n"
+        "Check the Angel One Order Book."
     )
-    else (
-        "ORDERED"
-        if st.session_state.get(
-            "last_order_id"
-        )
-        else "NONE"
-    )
-)
 
 
 # ============================================================
-# ANGEL ONE ORDER BOOK
+# ORDER BOOK
 # ============================================================
-
-st.divider()
 
 st.subheader(
     "📋 Angel One Order Book"
@@ -3095,170 +2508,192 @@ if orders:
         orders
     )
 
-    preferred = [
+    # --------------------------------------------------------
+    # Highlight most recent selected CE order
+    # --------------------------------------------------------
 
-        "orderid",
+    if (
+        st.session_state.last_order_symbol
+        and "tradingsymbol"
+        in order_df.columns
+    ):
 
-        "tradingsymbol",
+        selected_symbol = (
+            st.session_state.last_order_symbol
+        )
 
-        "symboltoken",
+        def highlight_selected(
+            row
+        ):
 
-        "transactiontype",
+            if str(
+                row.get(
+                    "tradingsymbol",
+                    ""
+                )
+            ).upper() == str(
+                selected_symbol
+            ).upper():
 
-        "exchange",
+                return [
+                    "background-color: #fff3cd"
+                ] * len(row)
 
-        "ordertype",
-
-        "producttype",
-
-        "quantity",
-
-        "price",
-
-        "averageprice",
-
-        "orderstatus",
-
-        "text",
-
-        "updatetime",
-    ]
-
-    existing = [
-        c
-        for c in preferred
-        if c in order_df.columns
-    ]
-
-    remaining = [
-        c
-        for c in order_df.columns
-        if c not in existing
-    ]
-
-    order_df = order_df[
-        existing
-        + remaining
-    ]
-
-    st.dataframe(
-        order_df,
-        use_container_width=True,
-        hide_index=True
-    )
-
-else:
-
-    st.info(
-        "No Angel One orders found."
-    )
-
-
-# ============================================================
-# PAPER ORDER BOOK
-# ============================================================
-
-if PAPER_TRADING:
-
-    st.divider()
-
-    st.subheader(
-        "🧪 Paper Order Book"
-    )
-
-    paper_orders = (
-        st.session_state[
-            "paper_orders"
-        ]
-    )
-
-    if paper_orders:
+            return [""] * len(row)
 
         st.dataframe(
-            pd.DataFrame(
-                paper_orders
+            order_df.style.apply(
+                highlight_selected,
+                axis=1
             ),
-            use_container_width=True,
-            hide_index=True
+            use_container_width=True
         )
 
     else:
 
-        st.info(
-            "No paper order yet."
+        st.dataframe(
+            order_df,
+            use_container_width=True
         )
 
+else:
+
+    st.info(
+        "No orders found in Angel One Order Book."
+    )
+
 
 # ============================================================
-# RECENT CANDLES
+# RECENT 2-MINUTE CANDLES
 # ============================================================
-
-st.divider()
 
 st.subheader(
-    "📊 Recent 2-Minute Supertrend"
+    "Recent 2-Minute Supertrend"
 )
 
-display_df = st_df[
+recent = df_st[
     [
         "open",
         "high",
         "low",
         "close",
+        "ATR",
         "Supertrend",
+        "ST_Direction",
         "ST_Green",
-        "ST_Flip_Green",
-        "ST_Flip_Red",
+        "ST_Red",
     ]
 ].tail(20).copy()
 
-display_df["Signal"] = np.where(
-    display_df[
-        "ST_Green"
-    ],
+recent["Signal"] = np.where(
+    recent["ST_Green"],
     "BUY CE",
     "WAIT"
 )
 
 st.dataframe(
-    display_df,
+    recent,
     use_container_width=True
 )
 
 
 # ============================================================
-# SAVE STATE
+# PRICE / SUPERTREND CHART
 # ============================================================
 
-save_state()
-
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-st.caption(
-    "Strategy: 2-Minute Supertrend (20, 1.5) | "
-    "GREEN = BUY ATM NIFTY CE | "
-    "No GREEN FLIP required"
+st.subheader(
+    "NIFTY 2-Minute Chart"
 )
 
-st.caption(
-    "Automatic refresh: "
-    f"{REFRESH_SECONDS} seconds | "
-    "Market: 09:15–15:30 IST"
+chart_data = prepare_chart_data(
+    df_st.tail(100)
 )
 
-st.caption(
-    "Last update: "
-    + now_ist().strftime(
-        "%Y-%m-%d %H:%M:%S IST"
+st.line_chart(
+    chart_data[
+        [
+            "Close",
+            "Supertrend",
+        ]
+    ],
+    use_container_width=True
+)
+
+
+# ============================================================
+# STRATEGY RULES
+# ============================================================
+
+with st.expander(
+    "Strategy Rules"
+):
+
+    st.write(
+        """
+        **Instrument:** NIFTY 50
+
+        **Candle:** 2-minute
+
+        **Supertrend:** Period 20, Multiplier 1.5
+
+        **GREEN:** BUY CE
+
+        **RED:** WAIT
+
+        **Green flip is NOT required.**
+
+        When the latest completed 2-minute candle is GREEN,
+        the program selects the nearest available NIFTY
+        expiry and nearest strike to the NIFTY spot price.
+
+        That option is the ATM NIFTY CE.
+
+        The program automatically attempts to BUY one lot.
+
+        There are no manual BUY/SELL buttons.
+
+        Duplicate automatic orders are blocked after an
+        order has been attempted.
+        """
     )
-)
 
 
 # ============================================================
-# AUTO REFRESH
+# FILE CHECK
+# ============================================================
+
+with st.expander(
+    "System Information"
+):
+
+    st.write(
+        f"dashboard.py: `{BASE_DIR}`"
+    )
+
+    st.write(
+        f"Instrument master: `{INSTRUMENT_FILE}`"
+    )
+
+    st.write(
+        "Instrument master exists: "
+        f"`{INSTRUMENT_FILE.exists()}`"
+    )
+
+    st.write(
+        f"PAPER_TRADING: `{PAPER_TRADING}`"
+    )
+
+    st.write(
+        f"LOTS: `{LOTS}`"
+    )
+
+    st.write(
+        f"Refresh: `{REFRESH_SECONDS}` seconds"
+    )
+
+
+# ============================================================
+# REFRESH
 # ============================================================
 
 time.sleep(
@@ -3266,4 +2701,3 @@ time.sleep(
 )
 
 st.rerun()
-
