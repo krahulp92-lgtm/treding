@@ -66,22 +66,22 @@ IST = ZoneInfo("Asia/Kolkata")
 # ANGEL ONE CREDENTIALS
 # ============================================================
 
-API_KEY = os.getenv(
+ANGEL_API_KEY = os.getenv(
     "ANGEL_API_KEY",
     ""
 ).strip()
 
-CLIENT_CODE = os.getenv(
+ANGEL_CLIENT_ID = os.getenv(
     "ANGEL_CLIENT_ID",
     ""
 ).strip()
 
-PIN = os.getenv(
+ANGEL_PASSWORD = os.getenv(
     "ANGEL_PASSWORD",
     ""
 ).strip()
 
-TOTP_SECRET = os.getenv(
+ANGEL_TOTP_SECRET = os.getenv(
     "ANGEL_TOTP_SECRET",
     ""
 ).strip()
