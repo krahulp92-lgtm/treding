@@ -2419,9 +2419,7 @@ def place_buy_ce(
             "LIVE",
 
         "status":
-            "SUBMITTED"
-            if order_id
-            else "SUBMITTED / VERIFYING",
+            "BUY CE SENT",
 
         "side":
             "BUY",
@@ -2860,20 +2858,33 @@ def automatic_buy_ce(
     option,
     candle_key
 ):
+    """Send the automatic ATM NIFTY CE BUY immediately.
 
-    # Same completed 2-minute candle must never place twice.
+    IMPORTANT:
+    - No broker order-book confirmation is required.
+    - No reconciliation is performed before/after sending.
+    - The strategy is triggered only from a completed 2-minute
+      GREEN Supertrend candle.
+    - One automatic BUY attempt is allowed per trading day.
+    """
+
+    # Same completed candle must never trigger twice.
     if st.session_state.get("last_processed_candle") == candle_key:
         return
 
-    # One automatic BUY attempt per trading day.
     today = now_ist().date().isoformat()
+
+    # New trading day -> reset daily BUY protection.
     if st.session_state.get("trade_date") != today:
         st.session_state["trade_date"] = today
         st.session_state["automatic_order_attempted"] = False
         st.session_state["last_order_id"] = None
+        st.session_state["last_order_time"] = None
+        st.session_state["last_order_status"] = None
         st.session_state["in_position"] = False
         st.session_state["position"] = None
 
+    # One automatic BUY attempt per day.
     if st.session_state.get("automatic_order_attempted"):
         st.session_state["last_processed_candle"] = candle_key
         st.session_state["last_message"] = (
@@ -2882,21 +2893,36 @@ def automatic_buy_ce(
         save_state()
         return
 
-    # Mark BEFORE sending because Streamlit reruns the script.
-    st.session_state["automatic_order_attempted"] = True
-    st.session_state["last_processed_candle"] = candle_key
-
-    quantity = LOTS * option["lot_size"]
+    quantity = LOTS * int(option["lot_size"])
 
     try:
-        # ====================================================
+        # ----------------------------------------------------
         # PAPER MODE
-        # ====================================================
+        # ----------------------------------------------------
         if PAPER_TRADING:
-            order_id = f"PAPER-{now_ist().strftime('%Y%m%d%H%M%S')}"
+            order_id = f"PAPER-{now_ist().strftime('%Y%m%d%H%M%S%f')}"
+
+            order = {
+                "time": now_ist().strftime("%Y-%m-%d %H:%M:%S"),
+                "order_id": order_id,
+                "mode": "PAPER",
+                "status": "BUY CE SENT",
+                "side": "BUY",
+                "symbol": option["symbol"],
+                "token": option["token"],
+                "expiry": option["expiry_raw"],
+                "strike": option["strike"],
+                "quantity": quantity,
+                "price": "MARKET",
+            }
+
+            add_local_order(order)
+
             st.session_state["last_order_id"] = order_id
             st.session_state["last_order_time"] = now_ist().isoformat()
-            st.session_state["last_order_status"] = "PAPER BUY CE"
+            st.session_state["last_order_status"] = "BUY CE SENT"
+            st.session_state["automatic_order_attempted"] = True
+            st.session_state["last_processed_candle"] = candle_key
             st.session_state["in_position"] = True
             st.session_state["position"] = {
                 "symbol": option["symbol"],
@@ -2909,20 +2935,29 @@ def automatic_buy_ce(
                 "mode": "PAPER",
             }
             st.session_state["last_message"] = (
-                f"AUTOMATIC BUY CE: {option['symbol']} | Qty: {quantity}"
+                f"AUTOMATIC BUY CE SENT: {option['symbol']} | Qty: {quantity}"
             )
             save_state()
             return
 
-        # ====================================================
-        # LIVE: SEND BUY DIRECTLY
-        # No broker confirmation/reconciliation is required.
-        # ====================================================
+        # ----------------------------------------------------
+        # LIVE ANGEL ONE ORDER
+        # ----------------------------------------------------
+        # place_buy_ce() sends the MARKET BUY directly.
+        # We DO NOT call verify_live_order() or
+        # reconcile_live_order() here.
         order_id, order = place_buy_ce(api, option)
 
-        st.session_state["last_order_id"] = order_id
+        # Mark the candle/day only after the API request was
+        # successfully accepted by the SmartAPI call.
+        st.session_state["automatic_order_attempted"] = True
+        st.session_state["last_processed_candle"] = candle_key
+        st.session_state["last_order_id"] = order_id or None
         st.session_state["last_order_time"] = now_ist().isoformat()
         st.session_state["last_order_status"] = "BUY CE SENT"
+
+        # This is local strategy state only; it is NOT a claim
+        # that Angel One has filled the order.
         st.session_state["in_position"] = True
         st.session_state["position"] = {
             "symbol": option["symbol"],
@@ -2935,13 +2970,22 @@ def automatic_buy_ce(
             "mode": "LIVE",
         }
 
+        order_text = (
+            f" | Order ID: {order_id}"
+            if order_id
+            else ""
+        )
+
         st.session_state["last_message"] = (
-            f"AUTOMATIC BUY CE SENT: {option['symbol']} | Qty: {quantity}"
+            f"AUTOMATIC BUY CE SENT: {option['symbol']} | "
+            f"Qty: {quantity}{order_text}"
         )
 
         save_state()
 
     except Exception as exc:
+        # Do not mark the day as successfully attempted if the
+        # SmartAPI request itself raised an exception.
         st.session_state["last_order_status"] = "BUY ERROR"
         st.session_state["last_message"] = (
             "Automatic BUY CE error: " + str(exc)
