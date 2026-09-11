@@ -2748,6 +2748,113 @@ def record_live_position(
 
 
 
+
+# ============================================================
+# RECONCILE LIVE ORDER
+# ============================================================
+
+def reconcile_live_order(api):
+    """Read-only reconciliation of the tracked LIVE BUY CE order.
+
+    Never places another order. A position is recorded only when
+    Angel One reports a filled/completed status.
+    """
+
+    if PAPER_TRADING or api is None:
+        return None
+
+    order_id = st.session_state.get("last_order_id")
+    symbol = st.session_state.get("option_symbol")
+
+    if not order_id and not symbol:
+        return None
+
+    orders = fetch_broker_order_book(api)
+    if not orders:
+        if order_id:
+            st.session_state["last_order_status"] = (
+                "AWAITING BROKER CONFIRMATION"
+            )
+        return None
+
+    found = None
+    if order_id:
+        found = find_order(orders, order_id=order_id, symbol=None)
+
+    if found is None and symbol:
+        found = find_recent_matching_order(
+            orders, symbol=symbol, quantity=None, side="BUY"
+        )
+
+    if found is None:
+        if order_id:
+            st.session_state["last_order_status"] = (
+                "AWAITING BROKER CONFIRMATION"
+            )
+        return None
+
+    broker_id = str(found.get("order_id") or order_id or "").strip()
+    if broker_id:
+        st.session_state["last_order_id"] = broker_id
+
+    broker_status = normalize_order_status(found.get("status")) or "SUBMITTED"
+    st.session_state["last_order_status"] = broker_status
+
+    # Update the local audit row with the broker-confirmed row.
+    old = st.session_state.get("order_book", [])
+    st.session_state["order_book"] = [found] + [
+        x for x in old
+        if str(x.get("order_id", "")) != broker_id
+    ]
+
+    quantity = found.get("quantity") or (
+        LOTS * (st.session_state.get("option_lot_size") or 0)
+    )
+
+    option = {
+        "symbol": found.get("symbol") or symbol,
+        "token": found.get("token") or st.session_state.get("option_token"),
+        "strike": st.session_state.get("option_strike"),
+        "expiry_raw": st.session_state.get("option_expiry"),
+    }
+
+    if order_is_filled(broker_status):
+        st.session_state["in_position"] = True
+        st.session_state["position"] = {
+            "symbol": option["symbol"],
+            "token": option["token"],
+            "strike": option["strike"],
+            "expiry": option["expiry_raw"],
+            "quantity": quantity,
+            "entry_price": found.get("price", "MARKET"),
+            "signal_candle": st.session_state.get("signal_time"),
+            "mode": "LIVE",
+            "broker_status": broker_status,
+            "order_id": broker_id,
+        }
+        st.session_state["last_message"] = (
+            "LIVE BUY CE confirmed by Angel One: "
+            f"{option['symbol']} | Order ID: {broker_id} | Status: {broker_status}"
+        )
+    elif order_is_rejected(broker_status):
+        st.session_state["in_position"] = False
+        st.session_state["position"] = None
+        st.session_state["last_message"] = (
+            f"Angel One BUY CE order was not filled: {broker_status} | "
+            f"Order ID: {broker_id}"
+        )
+    else:
+        st.session_state["in_position"] = False
+        st.session_state["position"] = None
+        st.session_state["last_message"] = (
+            f"Angel One BUY CE order is still pending: {broker_status} | "
+            f"Order ID: {broker_id}"
+        )
+
+    save_state()
+    return found
+
+
 def automatic_buy_ce(
     api,
     option,
