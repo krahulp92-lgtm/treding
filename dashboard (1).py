@@ -2861,328 +2861,92 @@ def automatic_buy_ce(
     candle_key
 ):
 
-    # --------------------------------------------------------
-    # SAME CANDLE PROTECTION
-    # --------------------------------------------------------
-
-    if (
-        st.session_state.get(
-            "last_processed_candle"
-        )
-        == candle_key
-    ):
-
+    # Same completed 2-minute candle must never place twice.
+    if st.session_state.get("last_processed_candle") == candle_key:
         return
 
-    # --------------------------------------------------------
-    # ONE AUTOMATIC ORDER ATTEMPT PER DAY
-    # --------------------------------------------------------
+    # One automatic BUY attempt per trading day.
+    today = now_ist().date().isoformat()
+    if st.session_state.get("trade_date") != today:
+        st.session_state["trade_date"] = today
+        st.session_state["automatic_order_attempted"] = False
+        st.session_state["last_order_id"] = None
+        st.session_state["in_position"] = False
+        st.session_state["position"] = None
 
-    today = (
-        now_ist()
-        .date()
-        .isoformat()
-    )
-
-    saved_trade_date = (
-        st.session_state.get(
-            "trade_date"
+    if st.session_state.get("automatic_order_attempted"):
+        st.session_state["last_processed_candle"] = candle_key
+        st.session_state["last_message"] = (
+            "Automatic BUY CE already attempted today. Duplicate BUY blocked."
         )
-    )
-
-    if saved_trade_date != today:
-
-        st.session_state[
-            "trade_date"
-        ] = today
-
-        st.session_state[
-            "automatic_order_attempted"
-        ] = False
-
-        st.session_state[
-            "last_order_id"
-        ] = None
-
-        st.session_state[
-            "in_position"
-        ] = False
-
-        st.session_state[
-            "position"
-        ] = None
-
-    # --------------------------------------------------------
-    # DUPLICATE PROTECTION
-    # --------------------------------------------------------
-
-    if st.session_state.get(
-        "automatic_order_attempted"
-    ):
-
-        st.session_state[
-            "last_message"
-        ] = (
-            "Automatic BUY already attempted "
-            "today. Duplicate order blocked."
-        )
-
-        st.session_state[
-            "last_processed_candle"
-        ] = candle_key
-
         save_state()
-
         return
 
-    if st.session_state.get(
-        "in_position"
-    ):
+    # Mark BEFORE sending because Streamlit reruns the script.
+    st.session_state["automatic_order_attempted"] = True
+    st.session_state["last_processed_candle"] = candle_key
 
-        st.session_state[
-            "last_message"
-        ] = (
-            "CE position already recorded. "
-            "Duplicate BUY blocked."
-        )
-
-        st.session_state[
-            "last_processed_candle"
-        ] = candle_key
-
-        save_state()
-
-        return
-
-    # --------------------------------------------------------
-    # MARK BEFORE SENDING
-    #
-    # This is important because Streamlit can rerun.
-    # --------------------------------------------------------
-
-    st.session_state[
-        "automatic_order_attempted"
-    ] = True
-
-    st.session_state[
-        "last_processed_candle"
-    ] = candle_key
-
-    quantity = (
-        LOTS
-        * option["lot_size"]
-    )
+    quantity = LOTS * option["lot_size"]
 
     try:
-
-        order_id, order = (
-            place_buy_ce(
-                api,
-                option
-            )
-        )
-
         # ====================================================
-        # PAPER ORDER
+        # PAPER MODE
         # ====================================================
-
         if PAPER_TRADING:
-
-            st.session_state[
-                "last_order_id"
-            ] = order_id
-
-            st.session_state[
-                "last_order_time"
-            ] = now_ist().isoformat()
-
-            st.session_state[
-                "last_order_status"
-            ] = "PAPER ORDER"
-
-            st.session_state[
-                "in_position"
-            ] = True
-
-            st.session_state[
-                "position"
-            ] = {
-
-                "symbol":
-                    option["symbol"],
-
-                "token":
-                    option["token"],
-
-                "strike":
-                    option["strike"],
-
-                "expiry":
-                    option["expiry_raw"],
-
-                "quantity":
-                    quantity,
-
-                "entry_price":
-                    "MARKET",
-
-                "signal_candle":
-                    candle_key,
-
-                "mode":
-                    "PAPER",
+            order_id = f"PAPER-{now_ist().strftime('%Y%m%d%H%M%S')}"
+            st.session_state["last_order_id"] = order_id
+            st.session_state["last_order_time"] = now_ist().isoformat()
+            st.session_state["last_order_status"] = "PAPER BUY CE"
+            st.session_state["in_position"] = True
+            st.session_state["position"] = {
+                "symbol": option["symbol"],
+                "token": option["token"],
+                "strike": option["strike"],
+                "expiry": option["expiry_raw"],
+                "quantity": quantity,
+                "entry_price": "MARKET",
+                "signal_candle": candle_key,
+                "mode": "PAPER",
             }
-
-            st.session_state[
-                "last_message"
-            ] = (
-                "PAPER: Automatic BUY CE "
-                f"created for {option['symbol']}"
+            st.session_state["last_message"] = (
+                f"AUTOMATIC BUY CE: {option['symbol']} | Qty: {quantity}"
             )
-
             save_state()
-
             return
 
         # ====================================================
-        # LIVE ORDER
+        # LIVE: SEND BUY DIRECTLY
+        # No broker confirmation/reconciliation is required.
         # ====================================================
+        order_id, order = place_buy_ce(api, option)
 
-        st.session_state[
-            "last_order_id"
-        ] = order_id
+        st.session_state["last_order_id"] = order_id
+        st.session_state["last_order_time"] = now_ist().isoformat()
+        st.session_state["last_order_status"] = "BUY CE SENT"
+        st.session_state["in_position"] = True
+        st.session_state["position"] = {
+            "symbol": option["symbol"],
+            "token": option["token"],
+            "strike": option["strike"],
+            "expiry": option["expiry_raw"],
+            "quantity": quantity,
+            "entry_price": "MARKET",
+            "signal_candle": candle_key,
+            "mode": "LIVE",
+        }
 
-        st.session_state[
-            "last_order_time"
-        ] = now_ist().isoformat()
-
-        found = verify_live_order(
-            api,
-            order_id,
-            option["symbol"]
+        st.session_state["last_message"] = (
+            f"AUTOMATIC BUY CE SENT: {option['symbol']} | Qty: {quantity}"
         )
-
-        if found:
-
-            broker_status = (
-                found.get(
-                    "status"
-                )
-                or "SUBMITTED"
-            )
-
-            st.session_state[
-                "last_order_status"
-            ] = broker_status
-
-            st.session_state[
-                "in_position"
-            ] = True
-
-            st.session_state[
-                "position"
-            ] = {
-
-                "symbol":
-                    option["symbol"],
-
-                "token":
-                    option["token"],
-
-                "strike":
-                    option["strike"],
-
-                "expiry":
-                    option["expiry_raw"],
-
-                "quantity":
-                    quantity,
-
-                "entry_price":
-                    found.get(
-                        "price",
-                        "MARKET"
-                    ),
-
-                "signal_candle":
-                    candle_key,
-
-                "mode":
-                    "LIVE",
-
-                "broker_status":
-                    broker_status,
-            }
-
-            st.session_state[
-                "order_book"
-            ] = [
-                found
-            ] + [
-                x
-                for x in st.session_state.get(
-                    "order_book",
-                    []
-                )
-                if x.get(
-                    "order_id"
-                ) != found.get(
-                    "order_id"
-                )
-            ]
-
-            st.session_state[
-                "last_message"
-            ] = (
-                "LIVE BUY CE verified in "
-                "Angel One Order Book: "
-                f"{option['symbol']} "
-                f"| Order ID: {order_id}"
-            )
-
-        else:
-
-            # ------------------------------------------------
-            # IMPORTANT:
-            # Do not retry automatically.
-            # ------------------------------------------------
-
-            st.session_state[
-                "last_order_status"
-            ] = (
-                "SUBMITTED / VERIFY MANUALLY"
-            )
-
-            st.session_state[
-                "last_message"
-            ] = (
-                "Order request was sent, but "
-                "broker Order Book verification "
-                "did not find the order yet. "
-                "Automatic retry is BLOCKED."
-            )
 
         save_state()
 
     except Exception as exc:
-
-        st.session_state[
-            "last_order_status"
-        ] = (
-            "ERROR / RETRY BLOCKED"
+        st.session_state["last_order_status"] = "BUY ERROR"
+        st.session_state["last_message"] = (
+            "Automatic BUY CE error: " + str(exc)
         )
-
-        st.session_state[
-            "last_message"
-        ] = (
-            "Automatic BUY CE error: "
-            + str(exc)
-        )
-
-        # Never automatically retry an uncertain
-        # live order.
         save_state()
-
         raise
 
 
@@ -3201,7 +2965,6 @@ def run_automation():
     # another order.
     # --------------------------------------------------------
 
-    reconcile_live_order(api)
 
     # --------------------------------------------------------
     # OUTSIDE ENTRY WINDOW
