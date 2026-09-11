@@ -1820,5 +1820,835 @@ def process_signal(
             # ------------------------------------------------
             # IMPORTANT
             #
+            # Mark signal processed immediately after
+            # successful placeOrder response.
             #
+            # NO execution confirmation.
+            # ------------------------------------------------
+
+            state[
+                "last_processed_candle"
+            ] = str(
+                signal_candle
+            )
+
+            state[
+                "last_order_id"
+            ] = order_id
+
+            state[
+                "last_order_time"
+            ] = str(
+                now_ist()
+            )
+
+            state[
+                "last_error"
+            ] = ""
+
+            state[
+                "status"
+            ] = "CONFIRM"
+
+            save_state(state)
+
+            return {
+                "status": "CONFIRM",
+
+                "message": (
+                    "AUTOMATIC BUY CE SUBMITTED | "
+                    f"{option['symbol']} | "
+                    f"Qty={option['quantity']} | "
+                    f"Order ID={order_id}"
+                ),
+
+                "order_id": order_id,
+            }
+
+        except Exception as e:
+
+            state[
+                "last_error"
+            ] = str(e)
+
+            save_state(state)
+
+            return {
+                "status": "CONFIRM",
+                "message": str(e),
+                "order_id": "",
+            }
+
+    # --------------------------------------------------------
+    # TEST MODE
+    # --------------------------------------------------------
+
+    state[
+        "last_processed_candle"
+    ] = str(
+        signal_candle
+    )
+
+    state[
+        "last_order_id"
+    ] = "TEST_ORDER"
+
+    state[
+        "last_order_time"
+    ] = str(
+        now_ist()
+    )
+
+    state[
+        "last_error"
+    ] = ""
+
+    save_state(state)
+
+    return {
+        "status": "CONFIRM",
+        "message": (
+            f"TEST MODE | BUY "
+            f"{option['symbol']}"
+        ),
+        "order_id": "TEST_ORDER",
+    }
+
+
+# ============================================================
+# MARKET STATUS
+# ============================================================
+
+def market_is_open():
+
+    current = now_ist()
+
+    # Saturday/Sunday
+    if current.weekday() >= 5:
+        return False
+
+    current_time = current.time()
+
+    open_time = pd.Timestamp(
+        MARKET_OPEN
+    ).time()
+
+    close_time = pd.Timestamp(
+        MARKET_CLOSE
+    ).time()
+
+    return (
+        open_time
+        <= current_time
+        < close_time
+    )
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.title(
+    "📈 NIFTY Automatic BUY CE"
+)
+
+st.caption(
+    "1-Minute → Completed 2-Minute → "
+    "Supertrend (20, 1.5) → RED → GREEN → "
+    "Automatic ATM CE MARKET BUY"
+)
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+with st.sidebar:
+
+    st.subheader(
+        "Trading Settings"
+    )
+
+    st.write(
+        "**Live Trading:** "
+        + (
+            "ON"
+            if LIVE_TRADING
+            else "OFF"
+        )
+    )
+
+    st.write(
+        f"**Supertrend:** "
+        f"{ST_PERIOD}, {ST_MULTIPLIER}"
+    )
+
+    st.write(
+        "**Signal timeframe:** 2 Minute"
+    )
+
+    st.write(
+        "**Instrument:** NIFTY ATM CE"
+    )
+
+    st.write(
+        f"**Lots:** {LOTS}"
+    )
+
+    st.write(
+        f"**Refresh:** "
+        f"{REFRESH_SECONDS}s"
+    )
+
+    st.divider()
+
+    if st.button(
+        "Login to Angel One",
+        use_container_width=True,
+    ):
+
+        with st.spinner(
+            "Logging in..."
+        ):
+
+            ok, message = login()
+
+        if ok:
+            st.success(message)
+
+        else:
+            st.error(message)
+
+    if st.session_state.login_status:
+
+        st.success(
+            "Angel One: Connected"
+        )
+
+    else:
+
+        st.warning(
+            "Angel One: Not connected"
+        )
+
+
+# ============================================================
+# LOGIN CHECK
+# ============================================================
+
+if not st.session_state.login_status:
+
+    st.warning(
+        "Login to Angel One to start "
+        "automatic NIFTY CE trading."
+    )
+
+    st.info(
+        "The dashboard remains WAIT until "
+        "a completed 2-minute candle produces "
+        "a RED → GREEN Supertrend flip."
+    )
+
+else:
+
+    api = st.session_state.api
+
+    # ========================================================
+    # LOAD INSTRUMENT MASTER
+    # ========================================================
+
+    try:
+
+        if (
+            st.session_state.instrument_df
+            is None
+        ):
+
+            with st.spinner(
+                "Loading NFO instrument master..."
+            ):
+
+                st.session_state.instrument_df = (
+                    load_instrument_master()
+                )
+
+    except Exception as e:
+
+        st.error(
+            f"Instrument master error: {e}"
+        )
+
+        st.stop()
+
+    # ========================================================
+    # MARKET STATUS
+    # ========================================================
+
+    if market_is_open():
+
+        st.success(
+            "🟢 NSE market is OPEN"
+        )
+
+    else:
+
+        st.warning(
+            "🔴 NSE market is CLOSED"
+        )
+
+    # ========================================================
+    # NIFTY SPOT
+    # ========================================================
+
+    spot = None
+
+    try:
+
+        spot = get_nifty_ltp(
+            api
+        )
+
+        state[
+            "last_ltp"
+        ] = spot
+
+    except Exception as e:
+
+        state[
+            "last_error"
+        ] = str(e)
+
+    # ========================================================
+    # 1-MINUTE DATA
+    # ========================================================
+
+    df_1m = pd.DataFrame()
+
+    try:
+
+        df_1m = get_nifty_1m_candles(
+            api
+        )
+
+    except Exception as e:
+
+        state[
+            "last_error"
+        ] = str(e)
+
+    # ========================================================
+    # 2-MINUTE DATA
+    # ========================================================
+
+    df_2m = pd.DataFrame()
+
+    if not df_1m.empty:
+
+        df_2m = build_2m_candles(
+            df_1m
+        )
+
+    # ========================================================
+    # SUPERTREND
+    # ========================================================
+
+    st_df = pd.DataFrame()
+
+    if not df_2m.empty:
+
+        st_df = calculate_supertrend(
+            df_2m,
+            ST_PERIOD,
+            ST_MULTIPLIER,
+        )
+
+    # ========================================================
+    # AUTOMATIC SIGNAL PROCESSING
+    # ========================================================
+
+    result = {
+        "status": "WAIT",
+        "message": "Waiting...",
+        "order_id": "",
+    }
+
+    if (
+        market_is_open()
+        and not st_df.empty
+        and spot is not None
+    ):
+
+        result = process_signal(
+            api,
+            spot,
+            st_df,
+        )
+
+    elif not market_is_open():
+
+        state[
+            "status"
+        ] = "WAIT"
+
+        result = {
+            "status": "WAIT",
+            "message": "Market closed.",
+            "order_id": "",
+        }
+
+    save_state(state)
+
+    # ========================================================
+    # CURRENT SUPERTREND STATUS
+    # ========================================================
+
+    latest_direction = "WAIT"
+
+    latest_candle_time = "-"
+
+    latest_close = None
+
+    latest_supertrend = None
+
+    latest_flip = False
+
+    if not st_df.empty:
+
+        valid = st_df.dropna(
+            subset=[
+                "ST_Direction",
+                "Supertrend",
+            ]
+        )
+
+        if not valid.empty:
+
+            latest = valid.iloc[-1]
+
+            latest_candle_time = (
+                valid.index[-1]
+            )
+
+            latest_close = float(
+                latest["close"]
+            )
+
+            latest_supertrend = float(
+                latest["Supertrend"]
+            )
+
+            latest_flip = bool(
+                latest["ST_Flip_Green"]
+            )
+
+            if int(
+                latest["ST_Direction"]
+            ) == 1:
+
+                latest_direction = "GREEN"
+
+            else:
+
+                latest_direction = "RED"
+
+    # ========================================================
+    # METRICS
+    # ========================================================
+
+    col1, col2, col3, col4 = (
+        st.columns(4)
+    )
+
+    with col1:
+
+        if spot is not None:
+
+            st.metric(
+                "NIFTY Spot",
+                f"{spot:.2f}",
+            )
+
+        else:
+
+            st.metric(
+                "NIFTY Spot",
+                "-",
+            )
+
+    with col2:
+
+        st.metric(
+            "2-Min Supertrend",
+            latest_direction,
+        )
+
+    with col3:
+
+        st.metric(
+            "Signal",
+            state.get(
+                "status",
+                "WAIT",
+            ),
+        )
+
+    with col4:
+
+        if latest_supertrend is not None:
+
+            st.metric(
+                "ST Value",
+                f"{latest_supertrend:.2f}",
+            )
+
+        else:
+
+            st.metric(
+                "ST Value",
+                "-",
+            )
+
+    # ========================================================
+    # SIGNAL DISPLAY
+    # ========================================================
+
+    st.divider()
+
+    status = state.get(
+        "status",
+        "WAIT",
+    )
+
+    if status == "CONFIRM":
+
+        st.success(
+            "🟢 CONFIRM — RED → GREEN detected"
+        )
+
+        if result.get("message"):
+
+            st.info(
+                result["message"]
+            )
+
+    else:
+
+        st.info(
+            "🟡 WAIT — Waiting for RED → GREEN flip"
+        )
+
+    # ========================================================
+    # SIGNAL INFORMATION
+    # ========================================================
+
+    st.subheader(
+        "Live Signal"
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+
+        st.write(
+            "**Latest completed 2-minute candle:**"
+        )
+
+        st.write(
+            str(
+                latest_candle_time
+            )
+        )
+
+    with c2:
+
+        st.write(
+            "**Supertrend direction:**"
+        )
+
+        st.write(
+            latest_direction
+        )
+
+    with c3:
+
+        st.write(
+            "**RED → GREEN flip:**"
+        )
+
+        st.write(
+            "YES"
+            if latest_flip
+            else "NO"
+        )
+
+    # ========================================================
+    # SELECTED ATM CE
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "Selected ATM CE"
+    )
+
+    option_cols = st.columns(6)
+
+    with option_cols[0]:
+
+        st.write("**Symbol**")
+
+        st.write(
+            state.get(
+                "last_option_symbol",
+                "",
+            )
+            or "-"
+        )
+
+    with option_cols[1]:
+
+        st.write("**Token**")
+
+        st.write(
+            state.get(
+                "last_option_token",
+                "",
+            )
+            or "-"
+        )
+
+    with option_cols[2]:
+
+        st.write("**Strike**")
+
+        strike = state.get(
+            "last_strike",
+            "",
+        )
+
+        if strike:
+
+            try:
+
+                st.write(
+                    f"{float(strike):.0f}"
+                )
+
+            except Exception:
+
+                st.write(
+                    str(strike)
+                )
+
+        else:
+
+            st.write("-")
+
+    with option_cols[3]:
+
+        st.write("**Expiry**")
+
+        st.write(
+            state.get(
+                "last_expiry",
+                "",
+            )
+            or "-"
+        )
+
+    with option_cols[4]:
+
+        st.write("**Quantity**")
+
+        quantity = state.get(
+            "last_quantity",
+            0,
+        )
+
+        st.write(
+            str(quantity)
+            if quantity
+            else "-"
+        )
+
+    with option_cols[5]:
+
+        st.write("**LTP**")
+
+        st.write(
+            f"{float(state['last_ltp']):.2f}"
+            if state.get("last_ltp")
+            else "-"
+        )
+
+    # ========================================================
+    # ORDER INFORMATION
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "Automatic Order"
+    )
+
+    order_cols = st.columns(3)
+
+    with order_cols[0]:
+
+        st.write(
+            "**Last Order ID**"
+        )
+
+        order_id = state.get(
+            "last_order_id",
+            "",
+        )
+
+        st.code(
+            order_id
+            if order_id
+            else "-"
+        )
+
+    with order_cols[1]:
+
+        st.write(
+            "**Order Time**"
+        )
+
+        st.write(
+            state.get(
+                "last_order_time",
+                "",
+            )
+            or "-"
+        )
+
+    with order_cols[2]:
+
+        st.write(
+            "**Last Signal**"
+        )
+
+        st.write(
+            state.get(
+                "last_signal",
+                "",
+            )
+            or "-"
+        )
+
+    # ========================================================
+    # LAST ERROR
+    # ========================================================
+
+    last_error = state.get(
+        "last_error",
+        "",
+    )
+
+    if last_error:
+
+        st.divider()
+
+        st.error(
+            last_error
+        )
+
+    # ========================================================
+    # DEBUG DATA
+    # ========================================================
+
+    with st.expander(
+        "2-Minute Supertrend Data"
+    ):
+
+        if not st_df.empty:
+
+            display_columns = [
+                "open",
+                "high",
+                "low",
+                "close",
+                "one_min_count",
+                "ATR",
+                "Supertrend",
+                "ST_Direction",
+                "ST_Green",
+                "ST_Red",
+                "ST_Flip_Green",
+                "ST_Flip_Red",
+            ]
+
+            available_columns = [
+                c
+                for c in display_columns
+                if c in st_df.columns
+            ]
+
+            debug_df = (
+                st_df[
+                    available_columns
+                ]
+                .tail(30)
+                .copy()
+            )
+
+            st.dataframe(
+                debug_df,
+                use_container_width=True,
+            )
+
+        else:
+
+            st.write(
+                "No completed 2-minute "
+                "data available."
+            )
+
+    # ========================================================
+    # CHART
+    # ========================================================
+
+    if not st_df.empty:
+
+        st.divider()
+
+        st.subheader(
+            "NIFTY 2-Minute Supertrend"
+        )
+
+        chart_df = (
+            st_df
+            .tail(100)
+            .copy()
+        )
+
+        chart_data = pd.DataFrame(
+            index=chart_df.index
+        )
+
+        chart_data["NIFTY"] = (
+            chart_df["close"]
+        )
+
+        chart_data["Supertrend"] = (
+            chart_df["Supertrend"]
+        )
+
+        st.line_chart(
+            chart_data,
+            use_container_width=True,
+        )
+
+
+# ============================================================
+# AUTO REFRESH
+# ============================================================
+
+time.sleep(
+    REFRESH_SECONDS
+)
+
+st.rerun()
 
