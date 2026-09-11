@@ -11,8 +11,9 @@
 #       ↓
 # Supertrend (20, 1.5)
 #       ↓
-# GREEN  -> AUTOMATIC BUY ATM NIFTY CE
-# RED    -> WAIT
+# CONFIRMED RED -> GREEN FLIP
+#       -> AUTOMATIC BUY ATM NIFTY CE
+# OTHERWISE -> WAIT
 #
 # ONLY 2-MINUTE SUPERTREND
 #
@@ -25,6 +26,8 @@
 # IMPORTANT:
 #   The current/forming 2-minute candle is NEVER used
 #   for automatic BUY decisions.
+#   BUY is allowed ONLY after the 2-minute candle closes
+#   AND the completed candle confirms RED -> GREEN.
 #
 # ============================================================
 
@@ -62,31 +65,29 @@ st.set_page_config(
 IST = ZoneInfo("Asia/Kolkata")
 
 
-def get_config_value(name, default=""):
-    """Read configuration from environment first, then Streamlit secrets."""
-    value = os.getenv(name)
-    if value is not None and str(value).strip():
-        return str(value).strip()
-
-    try:
-        value = st.secrets.get(name, default)
-    except Exception:
-        value = default
-
-    return str(value or default).strip()
-
-
 # ============================================================
-# ANGEL ONE CREDENTIALS / CONFIGURED CLIENT ACCOUNT
+# ANGEL ONE CREDENTIALS
 # ============================================================
-# The Angel One SmartConnect session is created with this
-# Client ID. Every automatic BUY CE order is sent through the
-# authenticated session belonging to this Client ID.
 
-ANGEL_API_KEY = get_config_value("ANGEL_API_KEY")
-ANGEL_CLIENT_ID = get_config_value("ANGEL_CLIENT_ID")
-ANGEL_PASSWORD = get_config_value("ANGEL_PASSWORD")
-ANGEL_TOTP_SECRET = get_config_value("ANGEL_TOTP_SECRET")
+ANGEL_API_KEY = os.getenv(
+    "ANGEL_API_KEY",
+    ""
+).strip()
+
+ANGEL_CLIENT_ID = os.getenv(
+    "ANGEL_CLIENT_ID",
+    ""
+).strip()
+
+ANGEL_PASSWORD = os.getenv(
+    "ANGEL_PASSWORD",
+    ""
+).strip()
+
+ANGEL_TOTP_SECRET = os.getenv(
+    "ANGEL_TOTP_SECRET",
+    ""
+).strip()
 
 
 # ============================================================
@@ -102,9 +103,19 @@ ANGEL_TOTP_SECRET = get_config_value("ANGEL_TOTP_SECRET")
 # ============================================================
 
 PAPER_TRADING = (
-    get_config_value("PAPER_TRADING", "false")
+    os.getenv(
+        "PAPER_TRADING",
+        "false"
+    )
+    .strip()
     .lower()
-    in ("1", "true", "yes", "y", "on")
+    in (
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    )
 )
 
 
@@ -213,9 +224,6 @@ DEFAULTS = {
 
     "login_status":
         "NOT CONNECTED",
-
-    "client_id":
-        ANGEL_CLIENT_ID or None,
 
     "last_error":
         "",
@@ -767,14 +775,9 @@ def angel_login():
     ] = ""
 
     st.session_state[
-        "client_id"
-    ] = ANGEL_CLIENT_ID
-
-    st.session_state[
         "last_message"
     ] = (
-        "Angel One login successful for Client ID "
-        + ANGEL_CLIENT_ID
+        "Angel One login successful"
     )
 
     return api
@@ -1467,104 +1470,77 @@ def get_2min_signal(
     df2
 ):
 
-    # --------------------------------------------------------
-    # VERY IMPORTANT:
-    # Remove the current/incomplete 2-minute candle BEFORE
-    # calculating the final signal.
-    # --------------------------------------------------------
+    # ========================================================
+    # CRITICAL SAFETY RULE
+    # ========================================================
+    # The current/forming 2-minute candle is NEVER used for
+    # an automatic BUY decision.
+    #
+    # 09:17 -> 09:15-09:17 candle is closed -> eligible
+    # 09:18 -> 09:17-09:19 candle is forming -> ignore
+    # 09:19 -> 09:17-09:19 candle is closed -> eligible
+    # ========================================================
 
-    completed = (
-        get_completed_2min_candles(
-            df2
-        )
-    )
+    completed = get_completed_2min_candles(df2)
 
-    if len(completed) < (
-        ST_PERIOD + 5
-    ):
-
+    if len(completed) < ST_PERIOD + 5:
         raise RuntimeError(
-            "Not enough COMPLETED 2-minute "
-            "candles for Supertrend "
-            f"{ST_PERIOD},{ST_MULTIPLIER}. "
+            "Not enough COMPLETED 2-minute candles for "
+            f"Supertrend {ST_PERIOD},{ST_MULTIPLIER}. "
             f"Received {len(completed)}."
         )
 
+    # Calculate Supertrend ONLY from completed 2-minute candles.
     st_df = calculate_supertrend(
         completed,
         period=ST_PERIOD,
-        multiplier=ST_MULTIPLIER
+        multiplier=ST_MULTIPLIER,
     )
 
-    row = st_df.iloc[-1]
-
-    direction = row[
-        "direction"
-    ]
-
-    if pd.isna(
-        direction
-    ):
-
+    if len(st_df) < 2:
         raise RuntimeError(
-            "Latest completed 2-minute "
-            "Supertrend direction is "
-            "not available."
+            "At least two completed 2-minute candles are required "
+            "to confirm a RED -> GREEN flip."
         )
 
-    direction = int(
-        direction
-    )
+    previous = st_df.iloc[-2]
+    current = st_df.iloc[-1]
 
-    green = (
-        direction == 1
-    )
+    previous_direction = previous["direction"]
+    current_direction = current["direction"]
 
-    red = (
-        direction == -1
-    )
+    if pd.isna(previous_direction) or pd.isna(current_direction):
+        raise RuntimeError(
+            "Completed 2-minute Supertrend direction is not available."
+        )
 
-    signal = (
-        "BUY CE"
-        if green
-        else "WAIT"
-    )
+    previous_direction = int(previous_direction)
+    current_direction = int(current_direction)
+
+    previous_red = previous_direction == -1
+    current_green = current_direction == 1
+    current_red = current_direction == -1
+
+    # BUY ONLY when the latest CLOSED candle changes RED -> GREEN.
+    green_flip = previous_red and current_green
+    signal = "BUY CE" if green_flip else "WAIT"
 
     return {
-
-        "signal":
-            signal,
-
-        "candle_time":
-            row["datetime"],
-
-        "close":
-            float(
-                row["close"]
-            ),
-
-        "supertrend":
-            (
-                float(
-                    row["supertrend"]
-                )
-                if pd.notna(
-                    row["supertrend"]
-                )
-                else None
-            ),
-
-        "direction":
-            direction,
-
-        "green":
-            green,
-
-        "red":
-            red,
-
-        "dataframe":
-            st_df,
+        "signal": signal,
+        "candle_time": current["datetime"],
+        "close": float(current["close"]),
+        "supertrend": (
+            float(current["supertrend"])
+            if pd.notna(current["supertrend"])
+            else None
+        ),
+        "direction": current_direction,
+        "green": current_green,
+        "red": current_red,
+        "previous_direction": previous_direction,
+        "previous_red": previous_red,
+        "green_flip": green_flip,
+        "dataframe": st_df,
     }
 
 
@@ -2860,86 +2836,203 @@ def automatic_buy_ce(
     option,
     candle_key
 ):
-    """Send the automatic CE BUY through the configured Client ID session.
 
-    The Client ID is bound to the SmartConnect session created by
-    angel_login(). No order-book confirmation is required before sending
-    the BUY request. Order-book data is display/reconciliation only.
-    """
+    # --------------------------------------------------------
+    # SAME CANDLE PROTECTION
+    # --------------------------------------------------------
 
-    if st.session_state.get("last_processed_candle") == candle_key:
-        return
-
-    today = now_ist().date().isoformat()
-    if st.session_state.get("trade_date") != today:
-        st.session_state["trade_date"] = today
-        st.session_state["automatic_order_attempted"] = False
-        st.session_state["last_order_id"] = None
-        st.session_state["in_position"] = False
-        st.session_state["position"] = None
-
-    if st.session_state.get("automatic_order_attempted"):
-        st.session_state["last_processed_candle"] = candle_key
-        st.session_state["last_message"] = (
-            "Automatic BUY CE already attempted today. Duplicate order blocked."
+    if (
+        st.session_state.get(
+            "last_processed_candle"
         )
-        save_state()
+        == candle_key
+    ):
+
         return
 
-    if st.session_state.get("in_position"):
-        st.session_state["last_processed_candle"] = candle_key
-        st.session_state["last_message"] = (
-            "CE position already recorded. Duplicate BUY blocked."
-        )
-        save_state()
-        return
+    # --------------------------------------------------------
+    # ONE AUTOMATIC ORDER ATTEMPT PER DAY
+    # --------------------------------------------------------
 
-    # Lock BEFORE the live broker request. This prevents a Streamlit rerun
-    # from sending a second order if the first request has an uncertain reply.
-    st.session_state["automatic_order_attempted"] = True
-    st.session_state["last_processed_candle"] = candle_key
-    st.session_state["last_order_status"] = "BUY REQUESTING"
-    st.session_state["last_order_id"] = None
-    st.session_state["last_order_time"] = now_ist().isoformat()
-    st.session_state["last_message"] = (
-        f"Sending automatic BUY CE through Angel One Client ID {ANGEL_CLIENT_ID}."
+    today = (
+        now_ist()
+        .date()
+        .isoformat()
     )
-    save_state()
 
-    quantity = LOTS * option["lot_size"]
+    saved_trade_date = (
+        st.session_state.get(
+            "trade_date"
+        )
+    )
+
+    if saved_trade_date != today:
+
+        st.session_state[
+            "trade_date"
+        ] = today
+
+        st.session_state[
+            "automatic_order_attempted"
+        ] = False
+
+        st.session_state[
+            "last_order_id"
+        ] = None
+
+        st.session_state[
+            "in_position"
+        ] = False
+
+        st.session_state[
+            "position"
+        ] = None
+
+    # --------------------------------------------------------
+    # DUPLICATE PROTECTION
+    # --------------------------------------------------------
+
+    if st.session_state.get(
+        "automatic_order_attempted"
+    ):
+
+        st.session_state[
+            "last_message"
+        ] = (
+            "Automatic BUY already attempted "
+            "today. Duplicate order blocked."
+        )
+
+        st.session_state[
+            "last_processed_candle"
+        ] = candle_key
+
+        save_state()
+
+        return
+
+    if st.session_state.get(
+        "in_position"
+    ):
+
+        st.session_state[
+            "last_message"
+        ] = (
+            "CE position already recorded. "
+            "Duplicate BUY blocked."
+        )
+
+        st.session_state[
+            "last_processed_candle"
+        ] = candle_key
+
+        save_state()
+
+        return
+
+    # --------------------------------------------------------
+    # MARK BEFORE SENDING
+    #
+    # This is important because Streamlit can rerun.
+    # --------------------------------------------------------
+
+    st.session_state[
+        "automatic_order_attempted"
+    ] = True
+
+    st.session_state[
+        "last_processed_candle"
+    ] = candle_key
+
+    quantity = (
+        LOTS
+        * option["lot_size"]
+    )
 
     try:
-        order_id, order = place_buy_ce(api, option)
+
+        order_id, order = (
+            place_buy_ce(
+                api,
+                option
+            )
+        )
+
+        # ====================================================
+        # PAPER ORDER
+        # ====================================================
 
         if PAPER_TRADING:
-            st.session_state["last_order_id"] = order_id
-            st.session_state["last_order_status"] = "PAPER ORDER"
-            st.session_state["in_position"] = True
-            st.session_state["position"] = {
-                "symbol": option["symbol"],
-                "token": option["token"],
-                "strike": option["strike"],
-                "expiry": option["expiry_raw"],
-                "quantity": quantity,
-                "entry_price": "MARKET",
-                "signal_candle": candle_key,
-                "mode": "PAPER",
-                "client_id": ANGEL_CLIENT_ID,
+
+            st.session_state[
+                "last_order_id"
+            ] = order_id
+
+            st.session_state[
+                "last_order_time"
+            ] = now_ist().isoformat()
+
+            st.session_state[
+                "last_order_status"
+            ] = "PAPER ORDER"
+
+            st.session_state[
+                "in_position"
+            ] = True
+
+            st.session_state[
+                "position"
+            ] = {
+
+                "symbol":
+                    option["symbol"],
+
+                "token":
+                    option["token"],
+
+                "strike":
+                    option["strike"],
+
+                "expiry":
+                    option["expiry_raw"],
+
+                "quantity":
+                    quantity,
+
+                "entry_price":
+                    "MARKET",
+
+                "signal_candle":
+                    candle_key,
+
+                "mode":
+                    "PAPER",
             }
-            st.session_state["last_message"] = (
-                f"PAPER: Automatic BUY CE created for {option['symbol']} "
-                f"using configured Client ID {ANGEL_CLIENT_ID}."
+
+            st.session_state[
+                "last_message"
+            ] = (
+                "PAPER: Automatic BUY CE "
+                f"created for {option['symbol']}"
             )
+
             save_state()
+
             return
 
-        # The BUY request has already been sent. Do NOT call orderBook() or
-        # verify_live_order() here as a prerequisite/confirmation step.
+        # ====================================================
+        # LIVE ORDER
+        # ====================================================
+        # Send the BUY request directly to Angel One.
+        # Order Book confirmation is display/reconciliation only;
+        # it is NOT a prerequisite for this automatic BUY.
+
         st.session_state["last_order_id"] = order_id
+        st.session_state["last_order_time"] = now_ist().isoformat()
         st.session_state["last_order_status"] = (
             "BUY CE SENT" if order_id else "BUY CE SENT / ORDER ID PENDING"
         )
-        st.session_state["in_position"] = False
+
         st.session_state["position"] = {
             "symbol": option["symbol"],
             "token": option["token"],
@@ -2949,23 +3042,37 @@ def automatic_buy_ce(
             "entry_price": "MARKET",
             "signal_candle": candle_key,
             "mode": "LIVE",
-            "client_id": ANGEL_CLIENT_ID,
             "broker_status": "SUBMITTED",
         }
+
         st.session_state["last_message"] = (
-            f"Automatic BUY CE SENT to Angel One account Client ID {ANGEL_CLIENT_ID}: "
-            f"{option['symbol']} | Order ID: {order_id or 'not returned'}"
+            "Automatic BUY CE request sent to Angel One for "
+            f"{option['symbol']} | Client ID: {ANGEL_CLIENT_ID}"
         )
+
+        # IMPORTANT: do NOT call verify_live_order() or orderBook()
+        # here. The automatic BUY has already been submitted.
         save_state()
 
     except Exception as exc:
-        st.session_state["last_order_status"] = "BUY REQUEST ERROR / UNKNOWN"
-        st.session_state["last_message"] = (
-            "Automatic BUY request failed or the response was uncertain. "
-            "Automatic retry is BLOCKED to prevent a duplicate order. "
-            f"Client ID: {ANGEL_CLIENT_ID} | Error: {exc}"
+
+        st.session_state[
+            "last_order_status"
+        ] = (
+            "ERROR / RETRY BLOCKED"
         )
+
+        st.session_state[
+            "last_message"
+        ] = (
+            "Automatic BUY CE error: "
+            + str(exc)
+        )
+
+        # Never automatically retry an uncertain
+        # live order.
         save_state()
+
         raise
 
 
@@ -2976,15 +3083,6 @@ def automatic_buy_ce(
 def run_automation():
 
     api = angel_login()
-
-    # --------------------------------------------------------
-    # RECONCILE ANY PREVIOUSLY SUBMITTED LIVE ORDER
-    #
-    # This only checks Angel One Order Book. It NEVER sends
-    # another order.
-    # --------------------------------------------------------
-
-    reconcile_live_order(api)
 
     # --------------------------------------------------------
     # OUTSIDE ENTRY WINDOW
@@ -3195,8 +3293,8 @@ def run_automation():
     )
 
     # --------------------------------------------------------
-    # GREEN = BUY CE
-    # RED = WAIT
+    # ONLY CONFIRMED RED -> GREEN = BUY CE
+    # Otherwise = WAIT
     # --------------------------------------------------------
 
     if info["signal"] != "BUY CE":
@@ -3208,8 +3306,8 @@ def run_automation():
         st.session_state[
             "last_message"
         ] = (
-            "Completed 2-minute Supertrend "
-            "is RED. Signal = WAIT."
+            "No confirmed RED -> GREEN flip on the latest "
+            "completed 2-minute candle. Signal = WAIT."
         )
 
         save_state()
@@ -3223,8 +3321,8 @@ def run_automation():
     st.session_state[
         "last_message"
     ] = (
-        "Completed 2-minute Supertrend is "
-        "GREEN. BUY CE condition detected."
+        "CONFIRMED RED -> GREEN flip on a CLOSED 2-minute "
+        "candle. Automatic BUY CE condition detected."
     )
 
     # --------------------------------------------------------
@@ -3414,8 +3512,7 @@ st.title(
 
 st.caption(
     "ONLY 2-Minute Supertrend (20, 1.5) "
-    "→ GREEN = AUTOMATIC BUY ATM NIFTY CE | "
-    "Order is sent through the configured Angel One Client ID"
+    "→ GREEN = AUTOMATIC BUY ATM NIFTY CE"
 )
 
 
@@ -3470,8 +3567,8 @@ except Exception as exc:
 # MAIN METRICS
 # ============================================================
 
-c1, c2, c3, c4, c5, c6 = (
-    st.columns(6)
+c1, c2, c3, c4, c5 = (
+    st.columns(5)
 )
 
 
@@ -3554,13 +3651,6 @@ with c5:
             if PAPER_TRADING
             else "LIVE"
         )
-    )
-
-with c6:
-
-    st.metric(
-        "Client ID",
-        ANGEL_CLIENT_ID or "-"
     )
 
 
@@ -3819,7 +3909,7 @@ if order_id:
 elif status:
 
     st.warning(
-        "BUY request sent; Angel One Order ID not returned yet"
+        "Order ID: Awaiting Angel One confirmation"
     )
 
     st.write(
@@ -3900,25 +3990,17 @@ local_orders = (
     )
 )
 
-# Broker Order Book is display-only. It never gates automatic BUY.
-all_orders = []
-seen_ids = set()
+if PAPER_TRADING:
 
-for row in broker_orders:
-    if not isinstance(row, dict):
-        continue
-    oid = str(row.get("order_id", "")).strip()
-    if oid:
-        seen_ids.add(oid)
-    all_orders.append(row)
+    all_orders = local_orders
 
-for row in local_orders:
-    if not isinstance(row, dict):
-        continue
-    oid = str(row.get("order_id", "")).strip()
-    if oid and oid in seen_ids:
-        continue
-    all_orders.append(row)
+else:
+
+    all_orders = (
+        broker_orders
+        if broker_orders
+        else local_orders
+    )
 
 
 if all_orders:
@@ -3941,9 +4023,9 @@ if all_orders:
         if isinstance(row, dict)
     ):
         st.caption(
-            "Local BUY submission is shown immediately. "
-            "Angel One Order Book is display-only and does not "
-            "control or delay the automatic BUY request."
+            "A blank Order ID means the local request is "
+            "still awaiting broker confirmation. It is "
+            "not an Angel One order ID."
         )
 
 else:
@@ -4063,9 +4145,13 @@ with st.expander(
 ↓
 **Supertrend (20, 1.5)**
 
-### GREEN
+### CONFIRMED GREEN FLIP
 
-🟢 Completed 2-minute Supertrend = GREEN
+🔴 Previous completed candle = RED
+
+↓
+
+🟢 Latest completed candle = GREEN
 
 ↓
 
@@ -4102,7 +4188,7 @@ Automatically BUY 1 lot
 - No 4-hour Supertrend
 - No manual BUY button
 - No manual SELL button
-- No green-flip requirement
+- BUY requires a confirmed RED → GREEN flip
 - Current/forming 2-minute candle is excluded
 - Same candle cannot place another order
 - One automatic order attempt per trading day
