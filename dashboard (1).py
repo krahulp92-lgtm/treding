@@ -2150,6 +2150,84 @@ def find_order(
     return None
 
 
+
+# ============================================================
+# EXTRACT BROKER ORDER ID
+# ============================================================
+
+def extract_order_id(response):
+    """
+    Extract the real Angel One order ID from the different
+    response shapes returned by SmartAPI.
+    """
+    if response is None:
+        return None
+
+    if isinstance(response, str):
+        value = response.strip()
+        if not value:
+            return None
+
+        # Some wrappers may return a JSON string.
+        if value.startswith("{"):
+            try:
+                parsed = json.loads(value)
+                return extract_order_id(parsed)
+            except Exception:
+                pass
+
+        # A normal placeOrder() response is usually the ID itself.
+        return value
+
+    if isinstance(response, dict):
+        # Prefer the standard SmartAPI keys first.
+        for key in (
+            "orderid",
+            "orderId",
+            "order_id",
+            "orderID",
+        ):
+            value = response.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+
+        # Search nested data/response/result objects.
+        for key in (
+            "data",
+            "response",
+            "result",
+            "body",
+        ):
+            value = response.get(key)
+            found = extract_order_id(value)
+            if found:
+                return found
+
+        return None
+
+    # Be tolerant of SmartAPI wrapper objects.
+    for attr in (
+        "orderid",
+        "orderId",
+        "order_id",
+        "orderID",
+        "data",
+        "response",
+        "result",
+    ):
+        try:
+            value = getattr(response, attr, None)
+        except Exception:
+            value = None
+
+        if value is not None:
+            found = extract_order_id(value)
+            if found:
+                return found
+
+    return None
+
+
 # ============================================================
 # PLACE BUY CE
 # ============================================================
@@ -2309,17 +2387,10 @@ def place_buy_ce(
             "order response."
         )
 
-    order_id = None
-
-    if isinstance(
-        response,
-        dict
-    ):
+    if isinstance(response, dict):
 
         if (
-            response.get(
-                "status"
-            )
+            response.get("status")
             is False
         ):
 
@@ -2328,71 +2399,13 @@ def place_buy_ce(
                 + str(response)
             )
 
-        data = (
-            response.get(
-                "data"
-            )
-            or {}
-        )
-
-        if isinstance(
-            data,
-            dict
-        ):
-
-            order_id = (
-                data.get(
-                    "orderid"
-                )
-                or data.get(
-                    "orderId"
-                )
-            )
-
-        if not order_id:
-
-            order_id = (
-                response.get(
-                    "orderid"
-                )
-                or response.get(
-                    "orderId"
-                )
-            )
-
-    elif isinstance(
-        response,
-        str
-    ):
-
-        order_id = (
-            response.strip()
-        )
-
-    else:
-
-        try:
-
-            order_id = str(
-                response
-            ).strip()
-
-        except Exception:
-
-            order_id = None
+    order_id = extract_order_id(
+        response
+    )
 
     # --------------------------------------------------------
-    # EMPTY/UNKNOWN RESPONSE
-    #
-    # DO NOT RETRY AUTOMATICALLY.
-    # The broker may already have accepted the order.
+    # NEVER invent a broker order ID.
     # --------------------------------------------------------
-
-    if not order_id:
-
-        order_id = (
-            "LIVE-UNKNOWN"
-        )
 
     order = {
 
@@ -2400,13 +2413,15 @@ def place_buy_ce(
             timestamp,
 
         "order_id":
-            order_id,
+            order_id or "",
 
         "mode":
             "LIVE",
 
         "status":
-            "SUBMITTED",
+            "SUBMITTED"
+            if order_id
+            else "SUBMITTED / VERIFYING",
 
         "side":
             "BUY",
@@ -2430,6 +2445,7 @@ def place_buy_ce(
             "MARKET",
     }
 
+    # Keep a local audit row, but never use LIVE-UNKNOWN.
     add_local_order(
         order
     )
@@ -2441,45 +2457,296 @@ def place_buy_ce(
 
 
 # ============================================================
+# FIND RECENT MATCHING BROKER ORDER
+# ============================================================
+
+def find_recent_matching_order(
+    orders,
+    symbol,
+    quantity=None,
+    side="BUY"
+):
+
+    if not orders:
+        return None
+
+    wanted_symbol = str(
+        symbol or ""
+    ).upper()
+
+    wanted_side = str(
+        side or ""
+    ).upper()
+
+    matches = []
+
+    for item in orders:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
+
+        item_symbol = str(
+            item.get(
+                "symbol",
+                ""
+            )
+        ).upper()
+
+        item_side = str(
+            item.get(
+                "side",
+                ""
+            )
+        ).upper()
+
+        if item_symbol != wanted_symbol:
+            continue
+
+        if wanted_side and item_side != wanted_side:
+            continue
+
+        if quantity is not None:
+
+            try:
+                item_qty = int(
+                    float(
+                        item.get(
+                            "quantity",
+                            0
+                        )
+                    )
+                )
+                if item_qty != int(
+                    quantity
+                ):
+                    continue
+            except Exception:
+                continue
+
+        matches.append(
+            item
+        )
+
+    if not matches:
+        return None
+
+    # Prefer the most recently updated order.
+    def sort_key(item):
+
+        raw = (
+            item.get("time")
+            or ""
+        )
+
+        try:
+            ts = pd.to_datetime(
+                raw,
+                errors="coerce"
+            )
+            if pd.isna(ts):
+                return pd.Timestamp.min
+            return ts
+        except Exception:
+            return pd.Timestamp.min
+
+    matches.sort(
+        key=sort_key,
+        reverse=True
+    )
+
+    return matches[0]
+
+
+# ============================================================
 # VERIFY LIVE ORDER
 # ============================================================
 
 def verify_live_order(
     api,
     order_id,
-    symbol
+    symbol,
+    quantity=None,
+    attempts=4,
+    delay_seconds=2
 ):
 
     if PAPER_TRADING:
-
         return None
 
-    # Give broker a short time to update order book.
-    time.sleep(2)
+    for attempt in range(
+        attempts
+    ):
 
-    orders = (
-        fetch_broker_order_book(
-            api
+        orders = (
+            fetch_broker_order_book(
+                api
+            )
+        )
+
+        # If the broker gave us a real ID, match by ID first.
+        if order_id:
+
+            found = find_order(
+                orders,
+                order_id=order_id,
+                symbol=None
+            )
+
+        else:
+
+            found = (
+                find_recent_matching_order(
+                    orders,
+                    symbol=symbol,
+                    quantity=quantity,
+                    side="BUY"
+                )
+            )
+
+        # When no ID was returned by placeOrderFullResponse,
+        # identify the newly created order from symbol/side/qty.
+        if (
+            found is None
+            and not order_id
+        ):
+
+            found = (
+                find_recent_matching_order(
+                    orders,
+                    symbol=symbol,
+                    quantity=quantity,
+                    side="BUY"
+                )
+            )
+
+        if found:
+            return found
+
+        if attempt < attempts - 1:
+            time.sleep(
+                delay_seconds
+            )
+
+    return None
+
+
+# ============================================================
+# BROKER STATUS HELPERS
+# ============================================================
+
+def normalize_order_status(value):
+
+    return str(
+        value or ""
+    ).strip().upper()
+
+
+def order_is_filled(status):
+
+    return normalize_order_status(
+        status
+    ) in (
+        "COMPLETE",
+        "COMPLETED",
+        "EXECUTED",
+        "FILLED",
+    )
+
+
+def order_is_rejected(status):
+
+    return normalize_order_status(
+        status
+    ) in (
+        "REJECTED",
+        "CANCELLED",
+        "CANCELED",
+        "FAILED",
+        "ERROR",
+    )
+
+
+def record_live_position(
+    option,
+    quantity,
+    candle_key,
+    found
+):
+
+    broker_status = (
+        found.get(
+            "status"
+        )
+        or "COMPLETE"
+    )
+
+    st.session_state[
+        "last_order_id"
+    ] = (
+        found.get(
+            "order_id"
+        )
+        or st.session_state.get(
+            "last_order_id"
         )
     )
 
-    found = find_order(
-        orders,
-        order_id=(
-            None
-            if order_id
-            == "LIVE-UNKNOWN"
-            else order_id
-        ),
-        symbol=symbol
-    )
+    st.session_state[
+        "last_order_status"
+    ] = broker_status
 
-    return found
+    # A position is recorded ONLY after the broker
+    # reports a filled/completed order.
+    if not order_is_filled(
+        broker_status
+    ):
+        return False
+
+    st.session_state[
+        "in_position"
+    ] = True
+
+    st.session_state[
+        "position"
+    ] = {
+
+        "symbol":
+            option["symbol"],
+
+        "token":
+            option["token"],
+
+        "strike":
+            option["strike"],
+
+        "expiry":
+            option["expiry_raw"],
+
+        "quantity":
+            quantity,
+
+        "entry_price":
+            found.get(
+                "price",
+                "MARKET"
+            ),
+
+        "signal_candle":
+            candle_key,
+
+        "mode":
+            "LIVE",
+
+        "broker_status":
+            broker_status,
+    }
+
+    return True
 
 
-# ============================================================
-# AUTOMATIC BUY CE
-# ============================================================
 
 def automatic_buy_ce(
     api,
@@ -2819,6 +3086,15 @@ def automatic_buy_ce(
 def run_automation():
 
     api = angel_login()
+
+    # --------------------------------------------------------
+    # RECONCILE ANY PREVIOUSLY SUBMITTED LIVE ORDER
+    #
+    # This only checks Angel One Order Book. It NEVER sends
+    # another order.
+    # --------------------------------------------------------
+
+    reconcile_live_order(api)
 
     # --------------------------------------------------------
     # OUTSIDE ENTRY WINDOW
@@ -3642,6 +3918,17 @@ if order_id:
         status or "-"
     )
 
+elif status:
+
+    st.warning(
+        "Order ID: Awaiting Angel One confirmation"
+    )
+
+    st.write(
+        "Status:",
+        status
+    )
+
 else:
 
     st.info(
@@ -3698,7 +3985,7 @@ if (
     not PAPER_TRADING
     and
     st.session_state.get(
-        "last_order_id"
+        "automatic_order_attempted"
     )
 ):
 
@@ -3739,6 +4026,19 @@ if all_orders:
         use_container_width=True,
         hide_index=True
     )
+
+    if any(
+        not str(
+            row.get("order_id", "")
+        ).strip()
+        for row in all_orders
+        if isinstance(row, dict)
+    ):
+        st.caption(
+            "A blank Order ID means the local request is "
+            "still awaiting broker confirmation. It is "
+            "not an Angel One order ID."
+        )
 
 else:
 
