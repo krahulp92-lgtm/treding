@@ -169,6 +169,10 @@ CANDLE_MIN_INTERVAL = 120
 # Angel One rate-limit cooldown.
 RATE_LIMIT_COOLDOWN = 180
 
+# How often the already-submitted live order is checked for
+# broker/exchange status. This NEVER gates the BUY request.
+ORDER_STATUS_CHECK_INTERVAL = 30
+
 
 # ============================================================
 # TRADING WINDOW
@@ -280,6 +284,9 @@ DEFAULTS = {
         None,
 
     "last_order_status":
+        None,
+
+    "last_order_check":
         None,
 
     "order_book":
@@ -584,6 +591,8 @@ def load_state():
 
             "last_order_status",
 
+            "last_order_check",
+
             "last_processed_candle",
 
             "last_fresh_candle",
@@ -631,6 +640,11 @@ def save_state():
         "last_order_status":
             st.session_state.get(
                 "last_order_status"
+            ),
+
+        "last_order_check":
+            st.session_state.get(
+                "last_order_check"
             ),
 
         "last_processed_candle":
@@ -2730,68 +2744,106 @@ def record_live_position(
 # ============================================================
 
 def reconcile_live_order(api):
-    """Read-only reconciliation of the tracked LIVE BUY CE order.
+    """Read-only status update for the already-submitted LIVE BUY CE.
 
-    Never places another order. A position is recorded only when
-    Angel One reports a filled/completed status.
+    IMPORTANT:
+    - This function NEVER places an order.
+    - It is called only AFTER the BUY request has been submitted.
+    - It does NOT gate the automatic BUY decision.
+    - The position is marked filled only when Angel One reports a
+      completed/filled execution status.
     """
 
     if PAPER_TRADING or api is None:
         return None
 
-    order_id = st.session_state.get("last_order_id")
-    symbol = st.session_state.get("option_symbol")
+    order_id = str(
+        st.session_state.get("last_order_id") or ""
+    ).strip()
+    symbol = str(
+        st.session_state.get("option_symbol") or ""
+    ).strip()
 
     if not order_id and not symbol:
         return None
 
-    orders = fetch_broker_order_book(api)
+    try:
+        orders = fetch_broker_order_book(api)
+    except Exception:
+        return None
+
+    st.session_state["last_order_check"] = now_ist().isoformat()
+
     if not orders:
+        # Keep the submitted state. Do not call it filled and do not
+        # create a position until the broker reports a fill.
         if order_id:
             st.session_state["last_order_status"] = (
-                "AWAITING BROKER CONFIRMATION"
+                "SUBMITTED / WAITING FOR FILL"
             )
+        save_state()
         return None
 
     found = None
-    if order_id:
-        found = find_order(orders, order_id=order_id, symbol=None)
 
+    if order_id:
+        found = find_order(
+            orders,
+            order_id=order_id,
+            symbol=None,
+        )
+
+    # If placeOrder did not return an order ID, try to locate the
+    # most recent matching BUY. This is still reconciliation only;
+    # it never sends a second order.
     if found is None and symbol:
         found = find_recent_matching_order(
-            orders, symbol=symbol, quantity=None, side="BUY"
+            orders,
+            symbol=symbol,
+            quantity=None,
+            side="BUY",
         )
 
     if found is None:
-        if order_id:
-            st.session_state["last_order_status"] = (
-                "AWAITING BROKER CONFIRMATION"
-            )
+        st.session_state["last_order_status"] = (
+            "SUBMITTED / WAITING FOR BROKER STATUS"
+        )
+        save_state()
         return None
 
-    broker_id = str(found.get("order_id") or order_id or "").strip()
+    broker_id = str(
+        found.get("order_id") or order_id or ""
+    ).strip()
+
     if broker_id:
         st.session_state["last_order_id"] = broker_id
 
-    broker_status = normalize_order_status(found.get("status")) or "SUBMITTED"
+    broker_status = normalize_order_status(
+        found.get("status")
+    ) or "SUBMITTED"
+
     st.session_state["last_order_status"] = broker_status
 
-    # Update the local audit row with the broker-confirmed row.
+    # Update local order-book display with the broker row.
     old = st.session_state.get("order_book", [])
     st.session_state["order_book"] = [found] + [
         x for x in old
         if str(x.get("order_id", "")) != broker_id
     ]
 
-    quantity = found.get("quantity") or (
-        LOTS * (st.session_state.get("option_lot_size") or 0)
-    )
+    quantity = found.get("quantity")
+    if not quantity:
+        quantity = (
+            LOTS
+            * int(st.session_state.get("option_lot_size") or 0)
+        )
 
     option = {
         "symbol": found.get("symbol") or symbol,
         "token": found.get("token") or st.session_state.get("option_token"),
         "strike": st.session_state.get("option_strike"),
         "expiry_raw": st.session_state.get("option_expiry"),
+        "lot_size": st.session_state.get("option_lot_size") or 0,
     }
 
     if order_is_filled(broker_status):
@@ -2802,29 +2854,43 @@ def reconcile_live_order(api):
             "strike": option["strike"],
             "expiry": option["expiry_raw"],
             "quantity": quantity,
-            "entry_price": found.get("price", "MARKET"),
+            "entry_price": (
+                found.get("averageprice")
+                or found.get("avgprice")
+                or found.get("price")
+                or "MARKET"
+            ),
             "signal_candle": st.session_state.get("signal_time"),
             "mode": "LIVE",
             "broker_status": broker_status,
             "order_id": broker_id,
         }
         st.session_state["last_message"] = (
-            "LIVE BUY CE confirmed by Angel One: "
-            f"{option['symbol']} | Order ID: {broker_id} | Status: {broker_status}"
+            "LIVE BUY CE FILLED/COMPLETED by Angel One: "
+            f"{option['symbol']} | Order ID: {broker_id} | "
+            f"Status: {broker_status}"
         )
+
     elif order_is_rejected(broker_status):
         st.session_state["in_position"] = False
-        st.session_state["position"] = None
+        # Keep the order context for audit; do not claim a position.
+        if st.session_state.get("position"):
+            st.session_state["position"]["broker_status"] = broker_status
         st.session_state["last_message"] = (
-            f"Angel One BUY CE order was not filled: {broker_status} | "
-            f"Order ID: {broker_id}"
+            "Angel One BUY CE was not filled: "
+            f"{broker_status} | Order ID: {broker_id}"
         )
+
     else:
+        # Submitted/open/pending/trigger-pending/etc. means the order
+        # is NOT filled yet.
         st.session_state["in_position"] = False
-        st.session_state["position"] = None
+        if st.session_state.get("position"):
+            st.session_state["position"]["broker_status"] = broker_status
+            st.session_state["position"]["order_id"] = broker_id
         st.session_state["last_message"] = (
-            f"Angel One BUY CE order is still pending: {broker_status} | "
-            f"Order ID: {broker_id}"
+            "BUY CE order submitted but NOT FILLED yet: "
+            f"{broker_status} | Order ID: {broker_id}"
         )
 
     save_state()
@@ -3077,12 +3143,53 @@ def automatic_buy_ce(
 
 
 # ============================================================
+# CHECK ALREADY-SUBMITTED LIVE ORDER
+# ============================================================
+
+def maybe_reconcile_live_order(api):
+    """Check fill status without ever placing another order."""
+
+    if PAPER_TRADING or api is None:
+        return
+
+    if not st.session_state.get("automatic_order_attempted"):
+        return
+
+    # A filled position does not need repeated order-book checks.
+    if st.session_state.get("in_position"):
+        return
+
+    last_check = st.session_state.get("last_order_check")
+    if last_check:
+        try:
+            ts = pd.Timestamp(last_check)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize(IST)
+            else:
+                ts = ts.tz_convert(IST)
+            if (
+                now_ist() - ts
+            ).total_seconds() < ORDER_STATUS_CHECK_INTERVAL:
+                return
+        except Exception:
+            pass
+
+    reconcile_live_order(api)
+
+
+# ============================================================
 # AUTOMATION
 # ============================================================
 
 def run_automation():
 
     api = angel_login()
+
+    # --------------------------------------------------------
+    # CHECK FILL STATUS OF AN ALREADY-SUBMITTED ORDER
+    # --------------------------------------------------------
+    # This is AFTER the BUY request and can never delay/gate a new BUY.
+    maybe_reconcile_live_order(api)
 
     # --------------------------------------------------------
     # OUTSIDE ENTRY WINDOW
@@ -3511,8 +3618,8 @@ st.title(
 )
 
 st.caption(
-    "ONLY 2-Minute Supertrend (20, 1.5) "
-    "→ GREEN = AUTOMATIC BUY ATM NIFTY CE"
+    "ONLY 2-Minute Supertrend (20, 1.5) → completed-candle RED -> GREEN "
+    "flip = AUTOMATIC BUY ATM NIFTY CE | current/forming candle is ignored"
 )
 
 
@@ -3883,6 +3990,12 @@ st.subheader(
     "Automatic Order Status"
 )
 
+st.caption(
+    "BUY request is sent automatically after a confirmed completed-candle "
+    "RED -> GREEN flip. The position is marked FILLED only after Angel One "
+    "reports a completed execution."
+)
+
 status = (
     st.session_state.get(
         "last_order_status"
@@ -3909,7 +4022,7 @@ if order_id:
 elif status:
 
     st.warning(
-        "Order ID: Awaiting Angel One confirmation"
+        "Order ID: Not returned by broker yet"
     )
 
     st.write(
@@ -4023,9 +4136,9 @@ if all_orders:
         if isinstance(row, dict)
     ):
         st.caption(
-            "A blank Order ID means the local request is "
-            "still awaiting broker confirmation. It is "
-            "not an Angel One order ID."
+            "Order status is read from Angel One after submission. "
+            "A filled position is shown only after Angel One reports "
+            "COMPLETE/FILLED/EXECUTED."
         )
 
 else:
